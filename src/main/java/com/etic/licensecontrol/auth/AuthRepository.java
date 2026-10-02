@@ -1,0 +1,15 @@
+package com.etic.licensecontrol.auth;
+
+import java.util.*;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public class AuthRepository {
+    private final NamedParameterJdbcTemplate db;
+    AuthRepository(NamedParameterJdbcTemplate db){this.db=db;}
+    Optional<Map<String,Object>> loginUser(String username){return db.query("SELECT u.*,ut.Code User_Type FROM users u JOIN user_types ut ON ut.Id_User_Type=u.Id_User_Type WHERE u.Username=:username",Map.of("username",username),(r,n)->{Map<String,Object> m=new LinkedHashMap<>();var md=r.getMetaData();for(int i=1;i<=md.getColumnCount();i++)m.put(md.getColumnLabel(i),r.getObject(i));return m;}).stream().findFirst();}
+    boolean isAuthorized(String id){Integer n=db.queryForObject("SELECT COUNT(*) FROM users u JOIN user_system_access usa ON usa.Id_User=u.Id_User JOIN systems s ON s.Id_System=usa.Id_System JOIN user_system_roles usr ON usr.Id_User=u.Id_User AND usr.Id_System=s.Id_System JOIN roles r ON r.Id_Role=usr.Id_Role AND r.Id_System=s.Id_System WHERE u.Id_User=:id AND u.Status='ACTIVE' AND s.Code='LICENSE_CONTROL' AND s.Status='ACTIVE' AND usa.Status='ACTIVE' AND (usa.Valid_From IS NULL OR usa.Valid_From<=NOW()) AND (usa.Valid_Until IS NULL OR usa.Valid_Until>=NOW()) AND r.Status='ACTIVE'",Map.of("id",id),Integer.class);return n!=null&&n>0;}
+    Map<String,Object> profile(String id){Map<String,Object> u=db.queryForMap("SELECT u.Id_User id,u.Username username,u.First_Name firstName,u.Last_Name lastName,u.Second_Last_Name secondLastName,u.Email email,ut.Code userType FROM users u JOIN user_types ut ON ut.Id_User_Type=u.Id_User_Type WHERE u.Id_User=:id",Map.of("id",id));u.put("roles",db.queryForList("SELECT DISTINCT r.Code FROM roles r JOIN user_system_roles ur ON ur.Id_Role=r.Id_Role JOIN systems s ON s.Id_System=ur.Id_System WHERE ur.Id_User=:id AND s.Code='LICENSE_CONTROL' AND r.Status='ACTIVE'",Map.of("id",id),String.class));u.put("permissions",db.queryForList("SELECT DISTINCT p.Code FROM permissions p JOIN role_permissions rp ON rp.Id_Permission=p.Id_Permission JOIN user_system_roles ur ON ur.Id_Role=rp.Id_Role JOIN systems s ON s.Id_System=ur.Id_System JOIN roles r ON r.Id_Role=ur.Id_Role AND r.Id_System=s.Id_System WHERE ur.Id_User=:id AND s.Code='LICENSE_CONTROL' AND p.Id_System=s.Id_System AND p.Status='ACTIVE' AND r.Status='ACTIVE'",Map.of("id",id),String.class));return u;}
+    void loginEvent(Map<String,Object> u,boolean ok,String reason){if(ok)db.update("UPDATE users SET Last_Login_At=NOW() WHERE Id_User=:id",Map.of("id",u.get("Id_User")));Map<String,Object> p=new HashMap<>();p.put("uid",u.get("Id_User"));p.put("name",u.getOrDefault("Username",""));p.put("ok",ok);p.put("reason",reason);db.update("INSERT INTO authentication_events(Id_Authentication_Event,Id_User,Id_System,Username_Attempted,Event_Type,Success,Failure_Reason,Client_Type) SELECT UUID(),:uid,s.Id_System,:name,'LOGIN',:ok,:reason,'WEB' FROM systems s WHERE s.Code='LICENSE_CONTROL'",p);}
+}
