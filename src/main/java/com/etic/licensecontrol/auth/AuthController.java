@@ -20,8 +20,13 @@ public class AuthController {
     @PostMapping("/system-login") @Transactional(noRollbackFor=ResponseStatusException.class) Map<String,Object> systemLogin(@Valid @RequestBody SystemLogin body){return authenticate(body.username(),body.password(),body.system());}
     private Map<String,Object> authenticate(String username,String password,String system){
         var user=repo.loginUser(username).orElse(null);
-        boolean valid=user!=null&&Boolean.TRUE.equals(user.get("Is_Active"))&&!java.util.Set.of("SUSPENDED","LOCKED").contains(user.get("Status"))&&encoder.matches(password,(String)user.get("Password_Hash"))&&repo.isAuthorized((String)user.get("Id_User"),system);
-        if(!valid){repo.loginEvent(user==null?Map.of("Username",username):user,false,"INVALID_CREDENTIALS_OR_ACCESS",system);throw new ResponseStatusException(HttpStatus.UNAUTHORIZED,"Credenciales o acceso inválidos");}
+        HttpStatus denied=null;String reason=null;
+        if(user==null||!encoder.matches(password,(String)user.get("Password_Hash"))){denied=HttpStatus.UNAUTHORIZED;reason="Usuario o contraseña incorrectos.";}
+        else if(!Boolean.TRUE.equals(user.get("Is_Active"))){denied=HttpStatus.FORBIDDEN;reason="El usuario está inactivo.";}
+        else if("LOCKED".equals(user.get("Status"))){denied=HttpStatus.FORBIDDEN;reason="El usuario está bloqueado.";}
+        else if("SUSPENDED".equals(user.get("Status"))){denied=HttpStatus.FORBIDDEN;reason="El usuario está suspendido.";}
+        else if(!repo.isAuthorized((String)user.get("Id_User"),system)){denied=HttpStatus.FORBIDDEN;reason="El usuario no tiene acceso a este sistema.";}
+        if(denied!=null){repo.loginEvent(user==null?Map.of("Username",username):user,false,"INVALID_CREDENTIALS_OR_ACCESS",system);throw new ResponseStatusException(denied,reason);}
         var profile=repo.profile((String)user.get("Id_User"),system);
         String token=jwt.create(profile);
         String previous=(String)user.get("Password_Hash");

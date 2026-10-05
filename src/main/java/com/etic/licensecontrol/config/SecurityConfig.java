@@ -24,7 +24,8 @@ public class SecurityConfig {
     }
     @Bean SecurityFilterChain security(HttpSecurity http, JwtFilter jwt, @org.springframework.beans.factory.annotation.Qualifier("cors") CorsConfigurationSource source) throws Exception {
         return http.csrf(c -> c.disable()).cors(c -> c.configurationSource(source)).sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .exceptionHandling(e -> e.authenticationEntryPoint((req,res,ex)->{res.setStatus(401);res.setContentType("application/json;charset=UTF-8");res.getWriter().write("{\"timestamp\":\""+java.time.Instant.now()+"\",\"status\":401,\"error\":\"Unauthorized\",\"message\":\"Sesión inválida o expirada\",\"path\":\""+req.getRequestURI()+"\"}");}))
+            .exceptionHandling(e -> e.authenticationEntryPoint((req,res,ex)->com.etic.licensecontrol.common.ApiExceptionHandler.write(req,res,org.springframework.http.HttpStatus.UNAUTHORIZED,"Sesión inválida o expirada."))
+                .accessDeniedHandler((req,res,ex)->com.etic.licensecontrol.common.ApiExceptionHandler.write(req,res,org.springframework.http.HttpStatus.FORBIDDEN,"El usuario no tiene permiso para realizar esta operación.")))
             .authorizeHttpRequests(a -> a.requestMatchers(HttpMethod.POST,"/api/auth/login","/api/auth/system-login").permitAll().requestMatchers("/api/system/health").permitAll().requestMatchers("/api/admin/**","/api/auth/me").authenticated().anyRequest().denyAll())
             .addFilterBefore(jwt, UsernamePasswordAuthenticationFilter.class).build();
     }

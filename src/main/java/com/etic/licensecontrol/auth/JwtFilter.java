@@ -14,10 +14,13 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Component
 public class JwtFilter extends OncePerRequestFilter {
     private final JwtService jwt; private final AuthRepository users;
-    JwtFilter(JwtService jwt, AuthRepository users){this.jwt=jwt;this.users=users;}
+    private final org.springframework.web.servlet.HandlerExceptionResolver errors;
+    JwtFilter(JwtService jwt, AuthRepository users,@org.springframework.beans.factory.annotation.Qualifier("handlerExceptionResolver") org.springframework.web.servlet.HandlerExceptionResolver errors){this.jwt=jwt;this.users=users;this.errors=errors;}
     protected void doFilterInternal(HttpServletRequest req,HttpServletResponse res,FilterChain chain)throws ServletException,IOException{
+        try {
         String h=req.getHeader("Authorization"); String id=h!=null&&h.startsWith("Bearer ")?jwt.subject(h.substring(7)):null;
         if(id!=null&&"LICENSE_CONTROL".equals(jwt.system(h.substring(7)))&&users.isAuthorized(id)) SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(id,null,List.of()));
+        }catch(Exception ex){errors.resolveException(req,res,null,ex);return;}
         chain.doFilter(req,res);
     }
 }
