@@ -51,7 +51,7 @@ public class AssignmentsController {
     }
     @GetMapping("/attributes/{attributeId}/options") List<Map<String,Object>> options(@PathVariable String attributeId){return c.db().queryForList("SELECT * FROM system_attribute_options WHERE Id_Attribute=:a AND Is_Active=TRUE ORDER BY Sort_Order",Map.of("a",attributeId)).stream().map(CrudService::formatDates).toList();}
     @PostMapping("/attributes/{attributeId}/options") @Transactional void option(@PathVariable String attributeId,@RequestBody Map<String,Object>b){
-        b.remove("Status");b.remove("Is_Active");b.putIfAbsent("Sort_Order",0);
+        b.remove("Status");b.remove("Is_Active");b.putIfAbsent("Sort_Order",0);b.put("Value_Code",CrudService.generatedCode(b.get("Display_Name"),100));
         new com.etic.licensecontrol.common.InputValidator(c.db()).validate("system_attribute_options",b);
         Map<String,Object>p=new HashMap<>(b);p.put("id",UUID.randomUUID().toString());p.put("a",attributeId);
         if(c.db().queryForObject("SELECT COUNT(*) FROM system_attributes WHERE Id_Attribute=:a AND Is_Active=TRUE",p,Integer.class)==0)throw new IllegalArgumentException("Atributo inactivo");

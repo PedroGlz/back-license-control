@@ -31,6 +31,10 @@ public class InputValidator {
         }
         for(var reference:Map.of("Id_User_Type","user_types","Id_System","systems","Id_Attribute","system_attributes").entrySet()){
             Object id=body.get(reference.getKey());
+            if(table.equals("users")&&reference.getKey().equals("Id_User_Type")&&id!=null){
+                if(db.queryForObject("SELECT COUNT(*) FROM user_types WHERE Id_User_Type=:id AND Is_Active=TRUE AND Status=\'ACTIVE\'",Map.of("id",id),Integer.class)==0)throw new IllegalArgumentException("El tipo de usuario no existe o está inactivo");
+                continue;
+            }
             if(id!=null&&db.queryForObject("SELECT COUNT(*) FROM "+reference.getValue()+" WHERE "+reference.getKey()+"=:id AND Is_Active=TRUE",Map.of("id",id),Integer.class)==0)throw new IllegalArgumentException(reference.getKey()+" debe referenciar un registro activo");
         }
         Object email=body.get("Email");if(email!=null&&!email.toString().matches("[^\\s@]+@[^\\s@]+\\.[^\\s@]+"))throw new IllegalArgumentException("Email inválido");
