@@ -1,0 +1,11 @@
+target/
+.git/
+.env
+.env.*
+storage/
+*.apk
+*.log
+logs/
+secrets/
+*.pem
+*.key

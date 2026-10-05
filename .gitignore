@@ -1,6 +1,16 @@
 HELP.md
 target/
 storage/apks/
+.env
+.env.*
+!.env.example
+storage/
+*.apk
+*.log
+logs/
+secrets/
+*.pem
+*.key
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

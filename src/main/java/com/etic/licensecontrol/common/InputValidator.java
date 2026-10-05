@@ -29,6 +29,10 @@ public class InputValidator {
                 if(type.equals("decimal"))new BigDecimal(value.toString());
             }catch(Exception ex){throw new IllegalArgumentException(name+" tiene un formato inválido");}
         }
+        for(var reference:Map.of("Id_User_Type","user_types","Id_System","systems","Id_Attribute","system_attributes").entrySet()){
+            Object id=body.get(reference.getKey());
+            if(id!=null&&db.queryForObject("SELECT COUNT(*) FROM "+reference.getValue()+" WHERE "+reference.getKey()+"=:id AND Is_Active=TRUE",Map.of("id",id),Integer.class)==0)throw new IllegalArgumentException(reference.getKey()+" debe referenciar un registro activo");
+        }
         Object email=body.get("Email");if(email!=null&&!email.toString().matches("[^\\s@]+@[^\\s@]+\\.[^\\s@]+"))throw new IllegalArgumentException("Email inválido");
         dates(body);
         if(body.get("Max_Devices")!=null&&new BigDecimal(body.get("Max_Devices").toString()).compareTo(BigDecimal.ONE)<0)throw new IllegalArgumentException("Max_Devices debe ser mayor a cero");

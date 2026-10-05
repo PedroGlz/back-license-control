@@ -17,7 +17,7 @@ public class JwtFilter extends OncePerRequestFilter {
     JwtFilter(JwtService jwt, AuthRepository users){this.jwt=jwt;this.users=users;}
     protected void doFilterInternal(HttpServletRequest req,HttpServletResponse res,FilterChain chain)throws ServletException,IOException{
         String h=req.getHeader("Authorization"); String id=h!=null&&h.startsWith("Bearer ")?jwt.subject(h.substring(7)):null;
-        if(id!=null&&users.isAuthorized(id)) SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(id,null,List.of()));
+        if(id!=null&&"LICENSE_CONTROL".equals(jwt.system(h.substring(7)))&&users.isAuthorized(id)) SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(id,null,List.of()));
         chain.doFilter(req,res);
     }
 }

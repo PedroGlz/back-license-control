@@ -15,8 +15,8 @@ public class AttributeValueService {
     public AttributeValueService(CrudService crud){this.crud=crud;}
     @Transactional public void save(String user,String system,String attribute,Map<String,Object> body){
         var db=crud.db();var key=Map.of("u",user,"s",system,"a",attribute);
-        if(db.queryForObject("SELECT COUNT(*) FROM user_system_access WHERE Id_User=:u AND Id_System=:s",key,Integer.class)==0)throw new IllegalArgumentException("Asigne primero el sistema al usuario");
-        var found=db.queryForList("SELECT * FROM system_attributes WHERE Id_Attribute=:a AND Id_System=:s AND Status='ACTIVE'",key);
+        if(db.queryForObject("SELECT COUNT(*) FROM user_system_access WHERE Id_User=:u AND Id_System=:s AND Is_Active=TRUE",key,Integer.class)==0)throw new IllegalArgumentException("Asigne primero el sistema al usuario");
+        var found=db.queryForList("SELECT * FROM system_attributes WHERE Id_Attribute=:a AND Id_System=:s AND Is_Active=TRUE",key);
         if(found.isEmpty())throw new IllegalArgumentException("Atributo inválido para este sistema");
         var definition=found.getFirst();String type=definition.get("Data_Type").toString();boolean multi=truth(definition.get("Is_Multivalue"))||type.equals("MULTISELECT");
         String column=multi?"Value_Json":switch(type){case"INTEGER"->"Value_Integer";case"DECIMAL"->"Value_Decimal";case"BOOLEAN"->"Value_Boolean";case"DATE"->"Value_Date";case"DATETIME"->"Value_Datetime";case"JSON"->"Value_Json";default->"Value_Text";};
@@ -37,7 +37,7 @@ public class AttributeValueService {
     }
     private void validateItem(Map<String,Object>d,String type,Object value){
         if(value==null)throw new IllegalArgumentException("Valor vacío inválido");String text=value.toString();
-        try{switch(type){case"INTEGER"->Long.parseLong(text);case"DECIMAL"->new BigDecimal(text);case"DATE"->LocalDate.parse(text);case"DATETIME"->LocalDateTime.parse(text.replace(' ','T'));case"BOOLEAN"->{if(!Set.of("true","false","0","1").contains(text))throw new IllegalArgumentException();}case"SELECT"->{if(crud.db().queryForObject("SELECT COUNT(*) FROM system_attribute_options WHERE Id_Attribute=:a AND Value_Code=:v AND Status='ACTIVE'",Map.of("a",d.get("Id_Attribute"),"v",text),Integer.class)==0)throw new IllegalArgumentException();}default->{}}}catch(Exception e){throw new IllegalArgumentException("Valor incompatible con "+d.get("Name"));}
+        try{switch(type){case"INTEGER"->Long.parseLong(text);case"DECIMAL"->new BigDecimal(text);case"DATE"->LocalDate.parse(text);case"DATETIME"->LocalDateTime.parse(text.replace(' ','T'));case"BOOLEAN"->{if(!Set.of("true","false","0","1").contains(text))throw new IllegalArgumentException();}case"SELECT"->{if(crud.db().queryForObject("SELECT COUNT(*) FROM system_attribute_options WHERE Id_Attribute=:a AND Value_Code=:v AND Is_Active=TRUE",Map.of("a",d.get("Id_Attribute"),"v",text),Integer.class)==0)throw new IllegalArgumentException();}default->{}}}catch(Exception e){throw new IllegalArgumentException("Valor incompatible con "+d.get("Name"));}
         if(d.get("Validation_Regex")!=null&&!text.matches(d.get("Validation_Regex").toString()))throw new IllegalArgumentException("El valor no cumple el formato de "+d.get("Name"));
         if(Set.of("INTEGER","DECIMAL").contains(type)){BigDecimal number=new BigDecimal(text);if(d.get("Min_Value")!=null&&number.compareTo(new BigDecimal(d.get("Min_Value").toString()))<0||d.get("Max_Value")!=null&&number.compareTo(new BigDecimal(d.get("Max_Value").toString()))>0)throw new IllegalArgumentException("Valor fuera del rango permitido");}
     }
