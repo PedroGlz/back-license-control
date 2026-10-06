@@ -27,6 +27,7 @@ public class SecurityConfig {
             .exceptionHandling(e -> e.authenticationEntryPoint((req,res,ex)->com.etic.licensecontrol.common.ApiExceptionHandler.write(req,res,org.springframework.http.HttpStatus.UNAUTHORIZED,"Tu sesión no es válida o expiró."))
                 .accessDeniedHandler((req,res,ex)->com.etic.licensecontrol.common.ApiExceptionHandler.write(req,res,org.springframework.http.HttpStatus.FORBIDDEN,"El usuario no tiene permiso para realizar esta operación.")))
             .authorizeHttpRequests(a -> a.requestMatchers(HttpMethod.POST,"/api/auth/login","/api/auth/system-login").permitAll().requestMatchers("/api/system/health").permitAll()
+                .requestMatchers(HttpMethod.POST,"/api/mobile/device/enroll","/api/mobile/device/*/challenge","/api/mobile/device/*/verify","/api/mobile/device/*/validate","/api/mobile/device/*/refresh").permitAll()
                 .requestMatchers("/api/auth/me").authenticated()
                 .requestMatchers("/api/admin/**").access((auth,context)->new org.springframework.security.authorization.AuthorizationDecision(auth.get().isAuthenticated()&&"LICENSE_CONTROL".equals(auth.get().getDetails())))
                 .requestMatchers("/api/portal/**").access((auth,context)->new org.springframework.security.authorization.AuthorizationDecision(auth.get().isAuthenticated()&&"ETIC_SUITE".equals(auth.get().getDetails())))
