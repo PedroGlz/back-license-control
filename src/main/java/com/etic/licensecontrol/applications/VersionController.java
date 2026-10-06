@@ -25,7 +25,7 @@ public class VersionController {
         if(file.isEmpty())throw failure(HttpStatus.BAD_REQUEST,"El archivo APK está vacío.",null);
         if(file.getOriginalFilename()==null||!file.getOriginalFilename().toLowerCase(Locale.ROOT).endsWith(".apk")||(file.getContentType()!=null&&!Set.of("application/vnd.android.package-archive","application/octet-stream","application/zip","application/x-zip-compressed").contains(file.getContentType().toLowerCase(Locale.ROOT))))throw failure(HttpStatus.UNSUPPORTED_MEDIA_TYPE,"El archivo seleccionado no es un APK válido.",null);
         if(maxApkSize>=0&&file.getSize()>maxApkSize)throw failure(HttpStatus.PAYLOAD_TOO_LARGE,"El APK supera el tamaño máximo permitido.",null);
-        if(crud.db().queryForObject("SELECT COUNT(*) FROM systems s JOIN system_licensing sl ON sl.Id_System=s.Id_System WHERE s.Id_System=:id AND s.Is_Active=TRUE AND s.Status='ACTIVE' AND sl.Is_Active=TRUE",Map.of("id",systemId),Integer.class)==0)throw failure(HttpStatus.NOT_FOUND,"El sistema seleccionado no existe o no tiene licenciamiento activo.",null);
+        if(crud.db().queryForObject("SELECT COUNT(*) FROM systems s JOIN system_licensing sl ON sl.Id_System=s.Id_System WHERE s.Id_System=:id AND s.Is_Active=TRUE AND s.Status='ACTIVE' AND s.System_Type='ANDROID' AND sl.Is_Active=TRUE",Map.of("id",systemId),Integer.class)==0)throw failure(HttpStatus.NOT_FOUND,"El sistema seleccionado no existe o no tiene licenciamiento activo.",null);
         if(versionName==null||versionName.isBlank())throw failure(HttpStatus.BAD_REQUEST,"Debes indicar la versión.",null);
         if(versionName.length()>80)throw new IllegalArgumentException("La versión no debe exceder 80 caracteres.");
         try{

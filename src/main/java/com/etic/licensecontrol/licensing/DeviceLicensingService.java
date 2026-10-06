@@ -17,14 +17,9 @@ public class DeviceLicensingService {
     private final NamedParameterJdbcTemplate db;
     private final DeviceCrypto crypto;
     private final TransactionTemplate tx;
-    private final long offlineSeconds;
-    private final ZoneId zone;
     private final EntitlementService entitlements;
-    public DeviceLicensingService(NamedParameterJdbcTemplate db,DeviceCrypto crypto,PlatformTransactionManager manager,EntitlementService entitlements,
-        @Value("${license-control.offline.validity-seconds:259200}") long seconds,
-        @Value("${license-control.offline.zone:America/Mexico_City}") String zone) {
-        this.entitlements=entitlements; this.db=db; this.crypto=crypto; this.tx=new TransactionTemplate(manager); this.offlineSeconds=seconds; this.zone=ZoneId.of(zone);
-        if(seconds<60||seconds>2592000)throw new IllegalArgumentException("La ventana offline debe estar entre 60 segundos y 30 días");
+    public DeviceLicensingService(NamedParameterJdbcTemplate db,DeviceCrypto crypto,PlatformTransactionManager manager,EntitlementService entitlements) {
+        this.entitlements=entitlements;this.db=db;this.crypto=crypto;this.tx=new TransactionTemplate(manager);
     }
     public record Enrollment(String system,String packageName,String code,String publicKey,String fingerprint,String signature,
         String manufacturer,String model,String androidVersion,String displayName,String appVersion) {}
@@ -38,6 +33,12 @@ public class DeviceLicensingService {
     }
     public Map<String,Object> generate(Activation input,String actor) {
         return tx.execute(status->{
+            var mandatory=db.queryForList("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='device_enrollment_codes' AND IS_NULLABLE='NO' AND COLUMN_DEFAULT IS NULL AND EXTRA NOT LIKE '%auto_increment%'",Map.of(),String.class);
+            mandatory.removeAll(Set.of("Id_Enrollment","Id_Entitlement","Code_Hash","Expires_At","Created_At","Created_By"));
+            if(!mandatory.isEmpty()){
+                org.slf4j.LoggerFactory.getLogger(DeviceLicensingService.class).error("Enrollment schema incompatible; required columns without values: {}",mandatory);
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"ENROLLMENT_SCHEMA_NOT_READY: La base conectada necesita actualizar su estructura de códigos de activación; no permite generarlos antes de vincular dispositivos.");
+            }
             var license=entitlements.usable(input.entitlementId());
             required(Objects.toString(license.get("Package_Name"),""),255);
             Instant now=Instant.now();
@@ -45,14 +46,14 @@ public class DeviceLicensingService {
             String code=crypto.randomToken(),id=UUID.randomUUID().toString();
             var p=new MapSqlParameterSource().addValue("entitlement",input.entitlementId()).addValue("actor",actor)
                 .addValue("id",id).addValue("hash",DeviceCrypto.hash(license.get("Id_System")+"|"+code)).addValue("expires",LocalDateTime.ofInstant(input.expiresAt(),ZoneOffset.UTC));
-            db.update("INSERT INTO device_enrollment_codes(Id_Enrollment,Id_Entitlement,Code_Hash,Expires_At,Created_At,Created_By) VALUES(:id,:entitlement,:hash,:expires,UTC_TIMESTAMP(),:actor)",p);
+            db.update("INSERT INTO device_enrollment_codes(Id_Enrollment,Id_Device,Id_Entitlement,Code_Hash,Expires_At,Created_At,Created_By) VALUES(:id,NULL,:entitlement,:hash,:expires,UTC_TIMESTAMP(),:actor)",p);
             return Map.of("id",id,"code",code,"expiresAt",input.expiresAt(),"system",license.get("Code"),"packageName",license.get("Package_Name"));
         });
     }
     public Map<String,Object> enroll(Enrollment input) {
         return audited("DEVICE_ENROLLED",()->tx.execute(status->{
             required(input.system(),80); required(input.packageName(),255); required(input.code(),128);
-            var systems=db.queryForList("SELECT s.Id_System FROM systems s JOIN system_licensing sl ON sl.Id_System=s.Id_System WHERE s.Code=:code AND s.Package_Name=:package AND s.Is_Active=TRUE AND s.Status='ACTIVE' AND sl.Is_Active=TRUE AND sl.Licensing_Mode='DEVICE_ONLY'",Map.of("code",input.system(),"package",input.packageName()));
+            var systems=db.queryForList("SELECT s.Id_System FROM systems s JOIN system_licensing sl ON sl.Id_System=s.Id_System WHERE s.Code=:code AND s.Package_Name=:package AND s.Is_Active=TRUE AND s.Status='ACTIVE' AND s.System_Type='ANDROID' AND sl.Is_Active=TRUE AND sl.Licensing_Mode='DEVICE_ONLY'",Map.of("code",input.system(),"package",input.packageName()));
             if(systems.size()!=1)throw denied("Sistema no autorizado para activación");
             String system=systems.getFirst().get("Id_System").toString();
             var codes=db.queryForList("SELECT * FROM device_enrollment_codes WHERE Code_Hash=:hash AND Used_At IS NULL AND Revoked_At IS NULL AND Expires_At>UTC_TIMESTAMP()",Map.of("hash",DeviceCrypto.hash(system+"|"+input.code())));
@@ -79,7 +80,8 @@ public class DeviceLicensingService {
                 .addValue("start",LocalDate.now(ZoneOffset.UTC)).addValue("end",until==null?LocalDate.of(9999,12,31):until.atOffset(ZoneOffset.UTC).toLocalDate());
             db.update("INSERT INTO licenses(Id_License,Id_Entitlement,Id_System,Id_Device,Valid_From,Valid_Until,Status,Created_At) VALUES(:license,:entitlement,:system,:device,:start,:end,'ACTIVE',UTC_TIMESTAMP())",p);
             if(db.update("UPDATE device_enrollment_codes SET Used_At=UTC_TIMESTAMP(),Id_Device=:device WHERE Id_Enrollment=:code AND Used_At IS NULL AND Revoked_At IS NULL AND Expires_At>UTC_TIMESTAMP()",p)!=1)throw denied("Código de activación inválido, vencido o usado");
-            return Map.of("deviceId",device,"licenseId",licenseId,"deviceFingerprint",fingerprint);
+            entitlement.put("Public_Key_Fingerprint",fingerprint);
+            return credential(entitlement,device,licenseId);
         }));
     }
     public Map<String,Object> challenge(String device,String licenseId) {
@@ -102,23 +104,30 @@ public class DeviceLicensingService {
             if(rows.isEmpty())throw denied("Credencial requiere renovación: challenge inválido, vencido o usado");
             String nonce=rows.getFirst().get("Nonce_Value").toString(); byte[] message=Base64.getUrlDecoder().decode(nonce);
             if(!new String(message,StandardCharsets.UTF_8).startsWith(proof.licenseId()+"\n")||!crypto.verify(license.get("Public_Key").toString(),message,proof.signature()))throw denied("Dispositivo no autorizado");
-            Instant now=Instant.now(); Instant expiry=EntitlementService.expiry(license);
-            Instant offline=now.plusSeconds(offlineSeconds); if(expiry!=null&&offline.isAfter(expiry))offline=expiry;
-            Map<String,Object> claims=new LinkedHashMap<>(); claims.put("licenseId",proof.licenseId());claims.put("systemId",license.get("Id_System"));claims.put("deviceId",device);
-            claims.put("deviceFingerprint",license.get("Public_Key_Fingerprint"));claims.put("packageName",license.get("Package_Name"));
-            claims.put("issuedAt",now.getEpochSecond());claims.put("expiresAt",expiry==null?null:expiry.getEpochSecond());claims.put("offlineUntil",offline.getEpochSecond());claims.put("status","ACTIVE");claims.put("formatVersion",2);claims.put("entitlementId",license.get("Id_Entitlement"));
-            String credential=crypto.issue(claims);
+            var response=credential(license,device,proof.licenseId());
             if(db.update("UPDATE device_challenges SET Used_At=UTC_TIMESTAMP(),Credential_Issued_At=UTC_TIMESTAMP() WHERE Id_Challenge=:id AND Used_At IS NULL AND Expires_At>UTC_TIMESTAMP()",Map.of("id",proof.challengeId()))!=1)throw denied("Credencial requiere renovación");
             db.update("UPDATE licensed_devices SET Last_Validation_At=UTC_TIMESTAMP() WHERE Id_Device=:id",Map.of("id",device));
-            Map<String,Object> response=new LinkedHashMap<>(claims);response.put("allowed",true);response.put("credential",credential);response.put("serverTime",now.getEpochSecond());return response;
+            return response;
         }));
+    }
+    private Map<String,Object> credential(Map<String,Object> license,String device,String licenseId) {
+        int days=((Number)license.get("Offline_Validity_Days")).intValue();
+        if(days<1||days>30)throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Configura una ventana offline entre 1 y 30 días para este sistema Android.");
+        Instant now=Instant.now(),expiry=EntitlementService.expiry(license);
+        Instant offline=now.plusSeconds(days*86400L);if(expiry!=null&&offline.isAfter(expiry))offline=expiry;
+        Map<String,Object> claims=new LinkedHashMap<>();
+        claims.put("licenseId",licenseId);claims.put("entitlementId",license.get("Id_Entitlement"));claims.put("systemId",license.get("Id_System"));
+        claims.put("deviceId",device);claims.put("deviceFingerprint",license.get("Public_Key_Fingerprint"));claims.put("packageName",license.get("Package_Name"));
+        claims.put("issuedAt",now.getEpochSecond());claims.put("expiresAt",expiry==null?null:expiry.getEpochSecond());claims.put("offlineUntil",offline.getEpochSecond());claims.put("status","ACTIVE");claims.put("formatVersion",2);
+        String signed=crypto.issue(claims);
+        var response=new LinkedHashMap<>(claims);response.put("allowed",true);response.put("credential",signed);response.put("serverTime",now.getEpochSecond());return response;
     }
     private Map<String,Object> license(String id,String device,boolean enrollment) {
         required(id,38);
         var owners=db.queryForList("SELECT Id_Entitlement FROM licenses WHERE Id_License=:id",Map.of("id",id));
         if(owners.isEmpty()||owners.getFirst().get("Id_Entitlement")==null)throw EntitlementService.denied("LICENSE_REVOKED","Licencia comercial no disponible");
         var entitlement=entitlements.usable(owners.getFirst().get("Id_Entitlement").toString());
-        var rows=db.queryForList("SELECT l.*,s.Code,s.Package_Name,s.Is_Active System_Active,s.Status System_Status,sl.Is_Active Licensing_Active,sl.Licensing_Mode,d.Is_Active Device_Active,d.Status Device_Status,d.Public_Key,d.Public_Key_Fingerprint,d.Package_Name Device_Package FROM licenses l JOIN systems s ON s.Id_System=l.Id_System JOIN system_licensing sl ON sl.Id_System=s.Id_System JOIN licensed_devices d ON d.Id_Device=l.Id_Device WHERE l.Id_License=:id FOR UPDATE",Map.of("id",id));
+        var rows=db.queryForList("SELECT l.*,s.Code,s.Package_Name,s.System_Type,s.Is_Active System_Active,s.Status System_Status,sl.Offline_Validity_Days,sl.Is_Active Licensing_Active,sl.Licensing_Mode,d.Is_Active Device_Active,d.Status Device_Status,d.Public_Key,d.Public_Key_Fingerprint,d.Package_Name Device_Package FROM licenses l JOIN systems s ON s.Id_System=l.Id_System JOIN system_licensing sl ON sl.Id_System=s.Id_System JOIN licensed_devices d ON d.Id_Device=l.Id_Device WHERE l.Id_License=:id FOR UPDATE",Map.of("id",id));
         if(rows.isEmpty())throw denied("Dispositivo no autorizado");
         var l=rows.getFirst();
         if(device!=null&&!device.equals(l.get("Id_Device")))throw denied("Dispositivo no autorizado");
@@ -128,7 +137,7 @@ public class DeviceLicensingService {
         if("SUSPENDED".equals(l.get("Status")))throw EntitlementService.denied("LICENSE_SUSPENDED","Licencia suspendida");
         if("EXPIRED".equals(l.get("Status")))throw EntitlementService.denied("LICENSE_EXPIRED","Licencia vencida");
         if(!"ACTIVE".equals(l.get("Status")))throw denied("Licencia aún no vigente");
-        if(!enabled(l.get("System_Active"))||!"ACTIVE".equals(l.get("System_Status"))||!enabled(l.get("Licensing_Active"))||!"DEVICE_ONLY".equals(l.get("Licensing_Mode"))||l.get("Id_Usuario")!=null)throw denied("Sistema no autorizado para licenciamiento de dispositivo");
+        if(!"ANDROID".equals(l.get("System_Type"))||!enabled(l.get("System_Active"))||!"ACTIVE".equals(l.get("System_Status"))||!enabled(l.get("Licensing_Active"))||!"DEVICE_ONLY".equals(l.get("Licensing_Mode"))||l.get("Id_Usuario")!=null)throw denied("Sistema no autorizado para licenciamiento de dispositivo");
         required(Objects.toString(l.get("Package_Name"),""),255);
         if(!enabled(l.get("Device_Active"))||!(enrollment?Set.of("PENDING","ACTIVE","ENROLLED"):Set.of("ACTIVE")).contains(l.get("Device_Status")))throw EntitlementService.denied("DEVICE_REVOKED","Dispositivo no autorizado");
         if(!enrollment&&(l.get("Public_Key")==null||!Objects.equals(l.get("Package_Name"),l.get("Device_Package"))))throw denied("Dispositivo no autorizado");

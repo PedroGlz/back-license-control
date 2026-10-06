@@ -17,7 +17,7 @@ public class EntitlementService {
     public EntitlementService(CrudService crud) { this.crud=crud;this.db=crud.db(); }
     public static final String OCCUPIED="SELECT COUNT(*) FROM licenses WHERE Id_Entitlement=:id AND Status IN ('ACTIVE','SUSPENDED')";
     public List<Map<String,Object>> list() {
-        var rows=db.queryForList("SELECT e.*,c.Name Customer_Name,s.Name System_Name,(SELECT COUNT(*) FROM licenses l WHERE l.Id_Entitlement=e.Id_Entitlement AND l.Status IN ('ACTIVE','SUSPENDED')) Used_Seats FROM license_entitlements e JOIN customers c ON c.Id_Customer=e.Id_Customer JOIN systems s ON s.Id_System=e.Id_System WHERE e.Is_Active=TRUE ORDER BY e.Created_At DESC",Map.of());
+        var rows=db.queryForList("SELECT e.*,c.Name Customer_Name,c.Email Customer_Email,s.Name System_Name,(SELECT COUNT(*) FROM licenses l WHERE l.Id_Entitlement=e.Id_Entitlement AND l.Status IN ('ACTIVE','SUSPENDED')) Used_Seats FROM license_entitlements e JOIN customers c ON c.Id_Customer=e.Id_Customer JOIN systems s ON s.Id_System=e.Id_System WHERE e.Is_Active=TRUE ORDER BY e.Created_At DESC",Map.of());
         rows.forEach(this::format);return rows;
     }
     public Map<String,Object> detail(String id) {
@@ -30,7 +30,7 @@ public class EntitlementService {
         if(seats<1)throw new IllegalArgumentException("La cantidad de dispositivos debe ser positiva");
         var p=new MapSqlParameterSource().addValue("customer",customer).addValue("system",system);
         if(db.queryForObject("SELECT COUNT(*) FROM customers WHERE Id_Customer=:customer AND Is_Active=TRUE",p,Integer.class)!=1)throw new IllegalArgumentException("Selecciona un cliente activo");
-        if(db.queryForObject("SELECT COUNT(*) FROM systems s JOIN system_licensing sl ON sl.Id_System=s.Id_System WHERE s.Id_System=:system AND s.Is_Active=TRUE AND s.Status='ACTIVE' AND sl.Is_Active=TRUE AND sl.Licensing_Mode='DEVICE_ONLY'",p,Integer.class)!=1)throw new IllegalArgumentException("Selecciona un sistema DEVICE_ONLY activo");
+        if(db.queryForObject("SELECT COUNT(*) FROM systems s JOIN system_licensing sl ON sl.Id_System=s.Id_System WHERE s.Id_System=:system AND s.Is_Active=TRUE AND s.Status='ACTIVE' AND s.System_Type='ANDROID' AND sl.Is_Active=TRUE AND sl.Licensing_Mode='DEVICE_ONLY'",p,Integer.class)!=1)throw new IllegalArgumentException("Selecciona un sistema DEVICE_ONLY activo");
         LocalDateTime now=LocalDateTime.now(ZoneOffset.UTC);
         LocalDateTime until=switch(term){case "MONTHLY"->now.plusMonths(1);case "ANNUAL"->now.plusYears(1);case "PERPETUAL"->null;default->throw new IllegalArgumentException("Vigencia inválida");};
         String id=UUID.randomUUID().toString();p.addValue("id",id).addValue("term",term).addValue("seats",seats).addValue("now",now).addValue("until",until).addValue("actor",actor);
@@ -51,7 +51,7 @@ public class EntitlementService {
     }
     public Map<String,Object> lock(String id) {
         if(id==null||id.isBlank())throw new IllegalArgumentException("Selecciona una licencia comercial");
-        var rows=db.queryForList("SELECT e.*,s.Code,s.Package_Name,s.Is_Active System_Active,s.Status System_Status,sl.Is_Active Licensing_Active,sl.Licensing_Mode FROM license_entitlements e JOIN systems s ON s.Id_System=e.Id_System JOIN system_licensing sl ON sl.Id_System=e.Id_System WHERE e.Id_Entitlement=:id FOR UPDATE",Map.of("id",id));
+        var rows=db.queryForList("SELECT e.*,s.Code,s.Package_Name,s.System_Type,s.Is_Active System_Active,s.Status System_Status,sl.Offline_Validity_Days,sl.Is_Active Licensing_Active,sl.Licensing_Mode FROM license_entitlements e JOIN systems s ON s.Id_System=e.Id_System JOIN system_licensing sl ON sl.Id_System=e.Id_System WHERE e.Id_Entitlement=:id FOR UPDATE",Map.of("id",id));
         if(rows.isEmpty())throw denied("LICENSE_REVOKED","Licencia no disponible");return rows.getFirst();
     }
     public Map<String,Object> usable(String id) {
@@ -59,7 +59,7 @@ public class EntitlementService {
         if(!enabled(e.get("Is_Active"))||"REVOKED".equals(e.get("Status")))throw denied("LICENSE_REVOKED","Licencia revocada");
         if("SUSPENDED".equals(e.get("Status")))throw denied("LICENSE_SUSPENDED","Licencia suspendida");
         if(expired(e))throw denied("LICENSE_EXPIRED","Licencia vencida");
-        if(!"ACTIVE".equals(e.get("Status"))||!enabled(e.get("System_Active"))||!"ACTIVE".equals(e.get("System_Status"))||!enabled(e.get("Licensing_Active"))||!"DEVICE_ONLY".equals(e.get("Licensing_Mode")))throw denied("LICENSE_REVOKED","Sistema no disponible");
+        if(!"ACTIVE".equals(e.get("Status"))||!"ANDROID".equals(e.get("System_Type"))||!enabled(e.get("System_Active"))||!"ACTIVE".equals(e.get("System_Status"))||!enabled(e.get("Licensing_Active"))||!"DEVICE_ONLY".equals(e.get("Licensing_Mode")))throw denied("LICENSE_REVOKED","Sistema no disponible");
         return e;
     }
     public int used(String id) { return db.queryForObject(OCCUPIED,Map.of("id",id),Integer.class); }

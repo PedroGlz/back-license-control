@@ -16,11 +16,12 @@ import tools.jackson.databind.json.JsonMapper;
 @Service
 public class DeviceCrypto {
     private final SecureRandom random = new SecureRandom();
-    private final String keyPath, keyId;
+    private final String keyPath, keyId, configuredKey;
     private final JsonMapper json = JsonMapper.builder().build();
     public DeviceCrypto(@Value("${license-control.offline.private-key-path:}") String keyPath,
-                        @Value("${license-control.offline.key-id:lc-device-v1}") String keyId) {
-        this.keyPath=keyPath; this.keyId=keyId;
+                        @Value("${license-control.offline.key-id:lc-device-v1}") String keyId,
+                        @Value("${LICENSING_SIGNING_PRIVATE_KEY:}") String configuredKey) {
+        this.keyPath=keyPath; this.keyId=keyId; this.configuredKey=configuredKey;
     }
     public String randomToken() { byte[] bytes=new byte[32]; random.nextBytes(bytes); return encode(bytes); }
     public static String hash(String value) { return hash(value.getBytes(StandardCharsets.UTF_8)); }
@@ -52,8 +53,9 @@ public class DeviceCrypto {
     }
     public String issue(Map<String,Object> claims) {
         try {
-            if(keyPath.isBlank())throw new InvalidKeyException("Offline signing key not configured");
-            var key=(ECPrivateKey)KeyFactory.getInstance("EC").generatePrivate(new PKCS8EncodedKeySpec(decodePem(Files.readString(Path.of(keyPath)),"PRIVATE KEY")));
+            if(keyPath.isBlank()&&configuredKey.isBlank())throw new InvalidKeyException("Offline signing key not configured");
+            String pem=keyPath.isBlank()?configuredKey:Files.readString(Path.of(keyPath));
+            var key=(ECPrivateKey)KeyFactory.getInstance("EC").generatePrivate(new PKCS8EncodedKeySpec(decodePem(pem,"PRIVATE KEY")));
             requireP256(key.getParams());
             String input=encode(json.writeValueAsBytes(Map.of("alg","ES256","typ","LC-OFFLINE-LICENSE","kid",keyId)))+"."+encode(json.writeValueAsBytes(claims));
             var signer=Signature.getInstance("SHA256withECDSAinP1363Format"); signer.initSign(key); signer.update(input.getBytes(StandardCharsets.US_ASCII));

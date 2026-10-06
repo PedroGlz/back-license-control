@@ -38,7 +38,7 @@ public class InputValidator {
             if(id!=null&&db.queryForObject("SELECT COUNT(*) FROM "+reference.getValue()+" WHERE "+reference.getKey()+"=:id AND Is_Active=TRUE",Map.of("id",id),Integer.class)==0)throw new IllegalArgumentException(reference.getKey()+" debe referenciar un registro activo");
         }
         if(Set.of("application_versions","user_application_access","licenses").contains(table)&&body.get("Id_System")!=null){
-            var configuration=db.queryForList("SELECT sl.Licensing_Mode FROM systems s JOIN system_licensing sl ON sl.Id_System=s.Id_System WHERE s.Id_System=:id AND s.Is_Active=TRUE AND s.Status='ACTIVE' AND sl.Is_Active=TRUE",Map.of("id",body.get("Id_System")));
+            var configuration=db.queryForList("SELECT sl.Licensing_Mode FROM systems s JOIN system_licensing sl ON sl.Id_System=s.Id_System WHERE s.Id_System=:id AND s.Is_Active=TRUE AND s.Status='ACTIVE' AND s.System_Type='ANDROID' AND sl.Is_Active=TRUE",Map.of("id",body.get("Id_System")));
             if(configuration.isEmpty())throw new IllegalArgumentException("El sistema no tiene licenciamiento activo");
             if("user_application_access".equals(table)&&!"USER_DEVICE".equals(configuration.getFirst().get("Licensing_Mode")))throw new IllegalArgumentException("Las asignaciones de licencia solo aplican a USER_DEVICE");
             if("licenses".equals(table)){

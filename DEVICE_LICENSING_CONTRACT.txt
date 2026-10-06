@@ -2,6 +2,8 @@ LICENSE CONTROL — CONTRATO DEVICE_ONLY V2
 
 CONCEPTOS
 systems es el catálogo maestro; system_licensing es opcional.
+Solo systems.System_Type=ANDROID puede configurar licenciamiento de dispositivo,
+Package_Name, Offline_Validity_Days y versiones APK. WEB no utiliza esta extensión.
 WEB: usuario -> user_system_access -> roles/permisos opcionales.
 No requiere cliente, entitlement, dispositivo, código ni user_application_access.
 USER_DEVICE: usuario -> user_application_access -> Max_Devices -> dispositivo
@@ -9,6 +11,15 @@ USER_DEVICE: usuario -> user_application_access -> Max_Devices -> dispositivo
 No requiere cliente ni roles. Android ETIC permanece con su flujo legacy.
 DEVICE_ONLY: cliente -> license_entitlements -> seats -> códigos -> dispositivos.
 No consulta usuarios, accesos de usuarios, roles ni permisos.
+Licencias ofrece dos pestañas independientes: Usuario + dispositivo (licenses
+USER_DEVICE, sin cliente/entitlement obligatorio) y Solo dispositivo (entitlements).
+
+DISTRIBUCIÓN DEL APK
+Suite conserva login, consulta de aplicaciones autorizadas y descarga publicada.
+Una descarga no registra dispositivos, crea licencias, consume códigos ni seats.
+El APK puede distribuirse por Suite, USB, correo, MDM o copia manual: tener el
+archivo no concede licencia. La futura APK debe bloquear su funcionalidad
+protegida hasta obtener activación válida. Suite y APK no fueron modificados.
 
 ADMINISTRACIÓN COMERCIAL
 Clientes: Name, Contact_Name, Email, Phone, Is_Active; sin estructura adicional.
@@ -47,9 +58,19 @@ expiresAt es ISO UTC futuro con máximo de 7 días.
 Código aleatorio de 256 bits, mostrado una sola vez; solo se guarda hash vinculado
 al sistema. Pertenece al entitlement; Id_Device es NULL hasta su consumo.
 GET /api/admin/enrollment-codes: historial sin código ni hash.
-Único ajuste de esquema: device_enrollment_codes.Id_Device nullable, FK conservada.
-No se crearon tablas; usar database/allow_unbound_enrollment_codes.sql al desplegar
-si el entorno todavía exige un dispositivo previo.
+Causa definitiva del error Generar códigos en producción: SCHEMA MISMATCH,
+device_enrollment_codes.Id_Device estaba definido NOT NULL. No era falta de
+clave privada de firma. El VPS se corrigió retirando temporalmente la FK,
+permitiendo NULL y recreando la FK.
+Definición formal: device_enrollment_codes.Id_Device CHAR(36) NULL DEFAULT NULL,
+con FK hacia licensed_devices(Id_Device). La migración existente
+database/allow_unbound_enrollment_codes.sql detecta la FK, conserva nombre y reglas,
+y la retira antes del ajuste/recreación para evitar el conflicto de nombre de FK
+en MySQL. Ejecutar sin escrituras concurrentes durante este cambio; ante error
+del ALTER intenta restaurar la FK original y propaga el error. Es repetible y aborta
+si encuentra identificadores de más de 36 caracteres, sin truncarlos.
+No se crearon tablas ni se modificó licensed_devices. Generar código mantiene
+Id_Device=NULL; enrollment registra el dispositivo y después vincula Id_Device.
 
 POST /api/mobile/device/enroll:
 {system,packageName,code,publicKey,fingerprint,signature,
@@ -65,8 +86,10 @@ El servidor verifica posesión de clave; no confía en IMEI/MAC/serial/ANDROID_I
 No acredita hardware seguro por metadata ni afirma verificar attestation.
 Con prueba, cupo y licencia válidos crea dispositivo AUTO y asignación licenses;
 consume código y enlaza Id_Device en la misma transacción.
-Un fallo revierte registro, seat y consumo. Clave ya registrada no se sobrescribe.
-Respuesta: deviceId,licenseId (asignación interna),deviceFingerprint.
+La firma inicial se emite dentro de esa misma transacción. Un fallo, incluida
+la ausencia de clave de firma, revierte registro, seat y consumo del código.
+Clave ya registrada no se sobrescribe. Respuesta: deviceId,licenseId (asignación
+interna),deviceFingerprint,credential y el resto del contrato de credencial V2.
 Id_Application e Id_Usuario quedan NULL.
 licenses.Valid_Until conserva compatibilidad técnica con su columna DATE NOT NULL:
 fecha comercial, o 9999-12-31 para PERPETUAL. Nunca es la autoridad comercial;
@@ -103,6 +126,7 @@ Payload formatVersion=2:
 entitlementId,licenseId,systemId,deviceId,deviceFingerprint,packageName,
 issuedAt,expiresAt,offlineUntil,status=ACTIVE.
 Tiempos epoch UTC en segundos; expiresAt=NULL solo en PERPETUAL.
+ventana=system_licensing.Offline_Validity_Days, configurable por sistema (1..30).
 offlineUntil=min(expiresAt,issuedAt+ventana) para MONTHLY/ANNUAL.
 PERPETUAL: offlineUntil=issuedAt+ventana. Nunca hay credencial offline permanente.
 Respuesta también incluye allowed=true y serverTime.
@@ -117,7 +141,14 @@ Una revocación no se conoce instantáneamente sin conexión; el límite es offl
 CONFIGURACIÓN / DESPLIEGUE FUTURO
 LICENSE_CONTROL_OFFLINE_PRIVATE_KEY_PATH: PEM PKCS#8 EC P-256 externo.
 LICENSE_CONTROL_OFFLINE_KEY_ID: identificador de clave.
-LICENSE_CONTROL_OFFLINE_VALIDITY_SECONDS: default 259200 (3 días), 60..2592000.
+Offline_Validity_Days es la autoridad para la ventana; el valor global anterior
+LICENSE_CONTROL_OFFLINE_VALIDITY_SECONDS no se usa para nuevas credenciales.
+También se admite LICENSING_SIGNING_PRIVATE_KEY como PEM PKCS#8 en entorno;
+si se configura el archivo, tiene prioridad. La clave se lee solo al firmar.
+Crear clientes/entitlements o generar códigos nunca requiere la clave de firma.
+La generación verifica columnas obligatorias del esquema conectado y devuelve
+503 ENROLLMENT_SCHEMA_NOT_READY si exige datos que ese flujo no debe suministrar;
+los nombres de columnas quedan exclusivamente en el log del backend.
 Montar clave read-only con permisos restringidos; no se generaron secretos.
 Sin clave la emisión falla cerrada con 503. No reutilizar secreto HS256 web.
 Distribuir solo clave pública a la APK por canal confiable, prever rotación.
