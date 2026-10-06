@@ -37,6 +37,15 @@ public class InputValidator {
             }
             if(id!=null&&db.queryForObject("SELECT COUNT(*) FROM "+reference.getValue()+" WHERE "+reference.getKey()+"=:id AND Is_Active=TRUE",Map.of("id",id),Integer.class)==0)throw new IllegalArgumentException(reference.getKey()+" debe referenciar un registro activo");
         }
+        if(Set.of("application_versions","user_application_access","licenses").contains(table)&&body.get("Id_System")!=null){
+            var configuration=db.queryForList("SELECT sl.Licensing_Mode FROM systems s JOIN system_licensing sl ON sl.Id_System=s.Id_System WHERE s.Id_System=:id AND s.Is_Active=TRUE AND s.Status='ACTIVE' AND sl.Is_Active=TRUE",Map.of("id",body.get("Id_System")));
+            if(configuration.isEmpty())throw new IllegalArgumentException("El sistema no tiene licenciamiento activo");
+            if("licenses".equals(table)){
+                String mode=Objects.toString(configuration.getFirst().get("Licensing_Mode"),"");
+                if("DEVICE_ONLY".equals(mode))body.put("Id_Usuario",null);
+                else if("USER_DEVICE".equals(mode)&&(body.get("Id_Usuario")==null||body.get("Id_Usuario").toString().isBlank()))throw new IllegalArgumentException("Esta modalidad requiere un usuario");
+            }
+        }
         Object email=body.get("Email");if(email!=null&&!email.toString().matches("[^\\s@]+@[^\\s@]+\\.[^\\s@]+"))throw new IllegalArgumentException("Email inválido");
         dates(body);
         if(body.get("Max_Devices")!=null&&new BigDecimal(body.get("Max_Devices").toString()).compareTo(BigDecimal.ONE)<0)throw new IllegalArgumentException("Max_Devices debe ser mayor a cero");

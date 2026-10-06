@@ -15,7 +15,7 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api/portal")
 public class PortalController {
     private static final String ACCESS="ua.Is_Active=TRUE AND ua.Status='ACTIVE' AND ua.Valid_From<=CURRENT_DATE AND (ua.Valid_Until IS NULL OR ua.Valid_Until>=CURRENT_DATE)";
-    private static final String VERSION_FIELDS="v.Id_Version id,v.Id_Application applicationId,a.Name applicationName,v.Version_Name versionName,v.Sha256 sha256,v.File_Size fileSize,v.Release_Notes releaseNotes,v.Minimum_Android minimumAndroid,v.Mandatory mandatory,v.Published published,v.Created_At createdAt";
+    private static final String VERSION_FIELDS="v.Id_Version id,v.Id_System applicationId,a.Name applicationName,v.Version_Name versionName,v.Sha256 sha256,v.File_Size fileSize,v.Release_Notes releaseNotes,v.Minimum_Android minimumAndroid,v.Mandatory mandatory,v.Published published,v.Created_At createdAt";
     private final CrudService crud;
     private final Path storage;
 
@@ -23,7 +23,7 @@ public class PortalController {
 
     @GetMapping("/apps")
     List<Map<String,Object>> apps(Authentication auth){
-        var rows=crud.db().queryForList("SELECT a.Id_Application id,a.Code code,a.Name name FROM licensed_applications a JOIN user_application_access ua ON ua.Id_Application=a.Id_Application WHERE ua.Id_Usuario=:user AND "+ACCESS+" AND a.Is_Active=TRUE AND a.Status='ACTIVE' ORDER BY a.Name,a.Id_Application",Map.of("user",auth.getName()));
+        var rows=crud.db().queryForList("SELECT a.Id_System id,a.Code code,a.Name name FROM systems a JOIN system_licensing sl ON sl.Id_System=a.Id_System AND sl.Is_Active=TRUE JOIN user_application_access ua ON ua.Id_System=a.Id_System WHERE ua.Id_Usuario=:user AND "+ACCESS+" AND a.Is_Active=TRUE AND a.Status='ACTIVE' ORDER BY a.Name,a.Id_System",Map.of("user",auth.getName()));
         rows.forEach(this::latestVersion);
         return rows;
     }
@@ -43,10 +43,11 @@ public class PortalController {
 
     @GetMapping("/downloads/{versionId}")
     ResponseEntity<FileSystemResource> download(@PathVariable String versionId,Authentication auth)throws IOException{
-        var rows=crud.db().queryForList("SELECT Id_Application,Storage_File_Name,Original_File_Name,Is_Active,Published FROM application_versions WHERE Id_Version=:version",Map.of("version",versionId));
+        var rows=crud.db().queryForList("SELECT Id_System,Storage_File_Name,Original_File_Name,Is_Active,Published FROM application_versions WHERE Id_Version=:version",Map.of("version",versionId));
         if(rows.isEmpty())throw missing();
         var version=rows.getFirst();
-        requireApplication(version.get("Id_Application").toString(),auth.getName());
+        if(version.get("Id_System")==null)throw missing(); // LEGACY TEMPORAL: requiere un vínculo explícito en la migración.
+        requireApplication(version.get("Id_System").toString(),auth.getName());
         if(!enabled(version.get("Is_Active"))||!enabled(version.get("Published")))throw missing();
         Path path;
         try{path=storage.resolve(version.get("Storage_File_Name").toString()).normalize();}
@@ -61,9 +62,9 @@ public class PortalController {
     }
 
     private Map<String,Object> requireApplication(String applicationId,String user){
-        var rows=crud.db().queryForList("SELECT Id_Application id,Code code,Name name FROM licensed_applications WHERE Id_Application=:app AND Is_Active=TRUE AND Status='ACTIVE'",Map.of("app",applicationId));
+        var rows=crud.db().queryForList("SELECT Id_System id,Code code,Name name FROM systems WHERE Id_System=:app AND Is_Active=TRUE AND Status='ACTIVE' AND EXISTS (SELECT 1 FROM system_licensing sl WHERE sl.Id_System=systems.Id_System AND sl.Is_Active=TRUE)",Map.of("app",applicationId));
         if(rows.isEmpty())throw missing();
-        Integer allowed=crud.db().queryForObject("SELECT COUNT(*) FROM user_application_access ua WHERE ua.Id_Usuario=:user AND ua.Id_Application=:app AND "+ACCESS,Map.of("app",applicationId,"user",user),Integer.class);
+        Integer allowed=crud.db().queryForObject("SELECT COUNT(*) FROM user_application_access ua WHERE ua.Id_Usuario=:user AND ua.Id_System=:app AND "+ACCESS,Map.of("app",applicationId,"user",user),Integer.class);
         if(allowed==null||allowed==0)throw new ResponseStatusException(HttpStatus.FORBIDDEN,"El usuario no tiene acceso a esta aplicación.");
         return rows.getFirst();
     }
@@ -74,7 +75,7 @@ public class PortalController {
     }
 
     private List<Map<String,Object>> publishedVersions(String applicationId,boolean latest){
-        var rows=crud.db().queryForList("SELECT "+VERSION_FIELDS+" FROM application_versions v JOIN licensed_applications a ON a.Id_Application=v.Id_Application WHERE v.Id_Application=:app AND v.Is_Active=TRUE AND v.Published=TRUE ORDER BY v.Created_At DESC,v.Id_Version DESC"+(latest?" LIMIT 1":""),Map.of("app",applicationId));
+        var rows=crud.db().queryForList("SELECT "+VERSION_FIELDS+" FROM application_versions v JOIN systems a ON a.Id_System=v.Id_System JOIN system_licensing sl ON sl.Id_System=a.Id_System AND sl.Is_Active=TRUE WHERE v.Id_System=:app AND v.Is_Active=TRUE AND v.Published=TRUE ORDER BY v.Created_At DESC,v.Id_Version DESC"+(latest?" LIMIT 1":""),Map.of("app",applicationId));
         rows.forEach(row->{CrudService.formatDates(row);row.put("mandatory",enabled(row.get("mandatory")));row.put("published",enabled(row.get("published")));});
         return rows;
     }

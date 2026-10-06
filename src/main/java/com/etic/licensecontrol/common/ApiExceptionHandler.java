@@ -97,7 +97,7 @@ public class ApiExceptionHandler {
         }
         return false;
     }
-    private static boolean isApkUpload(HttpServletRequest req){return "POST".equals(req.getMethod())&&req.getRequestURI().matches(".*/applications/[^/]+/versions");}
+    private static boolean isApkUpload(HttpServletRequest req){return "POST".equals(req.getMethod())&&req.getRequestURI().matches(".*/systems/[^/]+/versions");}
     public static Map<String,Object> body(HttpStatus status,String message,HttpServletRequest req){
         var body=new LinkedHashMap<String,Object>();body.put("timestamp",Instant.now().toString());body.put("status",status.value());body.put("error",status.getReasonPhrase());body.put("message",message);body.put("path",req.getRequestURI());return body;
     }
@@ -115,6 +115,7 @@ public class ApiExceptionHandler {
         if(detail.contains("uk_users_username"))return "El nombre de usuario ya está registrado.";
         if(detail.contains("uk_users_email"))return "El correo electrónico ya está registrado.";
         if(detail.contains("uq_application_versions_code"))return "Esta versión ya está registrada para la aplicación.";
+        // LEGACY TEMPORAL: traducción de constraints conservadas en la base de datos.
         if(detail.contains("uq_licensed_applications_code")||detail.contains("uq_licensed_applications_package"))return "La aplicación ya está registrada.";
         if(detail.contains("uq_user_application_access")||detail.contains("uk_user_system")||detail.contains("uk_role_permissions"))return "La relación ya está asignada.";
         if(detail.contains("uq_licenses_active_identity"))return "Ya existe una licencia activa para esta aplicación, usuario y dispositivo.";
