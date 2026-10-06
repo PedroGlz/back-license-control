@@ -19,7 +19,12 @@ public class JwtFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest req,HttpServletResponse res,FilterChain chain)throws ServletException,IOException{
         try {
         String h=req.getHeader("Authorization"); String id=h!=null&&h.startsWith("Bearer ")?jwt.subject(h.substring(7)):null;
-        if(id!=null&&"LICENSE_CONTROL".equals(jwt.system(h.substring(7)))&&users.isAuthorized(id)) SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(id,null,List.of()));
+        String system=id==null?null:jwt.system(h.substring(7));
+        if(id!=null&&system!=null&&users.isAuthorized(id,system)){
+            var authentication=new UsernamePasswordAuthenticationToken(id,null,List.of());
+            authentication.setDetails(system);
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+        }
         }catch(Exception ex){errors.resolveException(req,res,null,ex);return;}
         chain.doFilter(req,res);
     }

@@ -24,9 +24,13 @@ public class SecurityConfig {
     }
     @Bean SecurityFilterChain security(HttpSecurity http, JwtFilter jwt, @org.springframework.beans.factory.annotation.Qualifier("cors") CorsConfigurationSource source) throws Exception {
         return http.csrf(c -> c.disable()).cors(c -> c.configurationSource(source)).sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .exceptionHandling(e -> e.authenticationEntryPoint((req,res,ex)->com.etic.licensecontrol.common.ApiExceptionHandler.write(req,res,org.springframework.http.HttpStatus.UNAUTHORIZED,"Sesión inválida o expirada."))
+            .exceptionHandling(e -> e.authenticationEntryPoint((req,res,ex)->com.etic.licensecontrol.common.ApiExceptionHandler.write(req,res,org.springframework.http.HttpStatus.UNAUTHORIZED,"Tu sesión no es válida o expiró."))
                 .accessDeniedHandler((req,res,ex)->com.etic.licensecontrol.common.ApiExceptionHandler.write(req,res,org.springframework.http.HttpStatus.FORBIDDEN,"El usuario no tiene permiso para realizar esta operación.")))
-            .authorizeHttpRequests(a -> a.requestMatchers(HttpMethod.POST,"/api/auth/login","/api/auth/system-login").permitAll().requestMatchers("/api/system/health").permitAll().requestMatchers("/api/admin/**","/api/auth/me").authenticated().anyRequest().denyAll())
+            .authorizeHttpRequests(a -> a.requestMatchers(HttpMethod.POST,"/api/auth/login","/api/auth/system-login").permitAll().requestMatchers("/api/system/health").permitAll()
+                .requestMatchers("/api/auth/me").authenticated()
+                .requestMatchers("/api/admin/**").access((auth,context)->new org.springframework.security.authorization.AuthorizationDecision(auth.get().isAuthenticated()&&"LICENSE_CONTROL".equals(auth.get().getDetails())))
+                .requestMatchers("/api/portal/**").access((auth,context)->new org.springframework.security.authorization.AuthorizationDecision(auth.get().isAuthenticated()&&"ETIC_SUITE".equals(auth.get().getDetails())))
+                .anyRequest().denyAll())
             .addFilterBefore(jwt, UsernamePasswordAuthenticationFilter.class).build();
     }
     @Bean org.springframework.security.core.userdetails.UserDetailsService userDetailsService(){return new org.springframework.security.provisioning.InMemoryUserDetailsManager(java.util.Collections.emptyList());}

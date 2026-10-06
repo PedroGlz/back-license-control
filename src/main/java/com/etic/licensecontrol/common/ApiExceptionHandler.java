@@ -19,7 +19,15 @@ public class ApiExceptionHandler {
     public ResponseEntity<Map<String,Object>> handle(Exception ex,HttpServletRequest req){
         HttpStatus status=HttpStatus.INTERNAL_SERVER_ERROR;
         String message=isApkUpload(req)?"No fue posible cargar el APK. Consulta al administrador.":"No fue posible completar la operación. Consulta al administrador.";
-        if(ex instanceof ResponseStatusException r){status=HttpStatus.valueOf(r.getStatusCode().value());message=safeMessage(r.getReason(),message);}
+        java.sql.SQLException sql=findSqlException(ex);
+        int sqlCode=sql==null?0:sql.getErrorCode();
+        if(sqlCode==1364){message="La configuración requerida para completar la operación está incompleta en el servidor.";}
+        else if(sqlCode==1054){message="La configuración de datos del servidor no está actualizada.";}
+        else if(sqlCode==1062){status=HttpStatus.CONFLICT;message=integrityMessage(sql);}
+        else if(sqlCode==1451||sqlCode==1452){status=sqlCode==1451?HttpStatus.CONFLICT:HttpStatus.BAD_REQUEST;message="Existe una relación inválida o el registro está siendo utilizado.";}
+        else if(diskFull(ex)){status=HttpStatus.INSUFFICIENT_STORAGE;message="No hay espacio suficiente para almacenar el archivo.";}
+        else if(storageDenied(ex)){status=HttpStatus.SERVICE_UNAVAILABLE;message="No fue posible escribir el archivo en el almacenamiento del servidor.";}
+        else if(ex instanceof ResponseStatusException r){status=HttpStatus.valueOf(r.getStatusCode().value());message=status==HttpStatus.SERVICE_UNAVAILABLE&&storageFailure(ex)?"No fue posible escribir el archivo en el almacenamiento del servidor.":safeMessage(r.getReason(),message);}
         else if(ex instanceof org.springframework.security.core.AuthenticationException){status=HttpStatus.UNAUTHORIZED;message="Sesión inválida o expirada.";}
         else if(ex instanceof org.springframework.security.access.AccessDeniedException){status=HttpStatus.FORBIDDEN;message="El usuario no tiene permiso para realizar esta operación.";}
         else if(ex instanceof MaxUploadSizeExceededException){status=HttpStatus.PAYLOAD_TOO_LARGE;message="El APK supera el tamaño máximo permitido.";}
@@ -37,9 +45,8 @@ public class ApiExceptionHandler {
         else if(ex instanceof DataIntegrityViolationException d){
             status=HttpStatus.CONFLICT;message=integrityMessage(d);
             Throwable cause=d.getMostSpecificCause();
-            if(cause instanceof java.sql.SQLException sql){
-                if(sql.getErrorCode()==1452){status=HttpStatus.BAD_REQUEST;message="El registro relacionado no existe.";}
-                if(sql.getErrorCode()==1048||sql.getErrorCode()==1364||sql.getErrorCode()==1406){status=HttpStatus.BAD_REQUEST;message="Revisa los campos obligatorios y sus longitudes máximas.";}
+            if(cause instanceof java.sql.SQLException integritySql){
+                if(integritySql.getErrorCode()==1048||integritySql.getErrorCode()==1406){status=HttpStatus.BAD_REQUEST;message="Revisa los campos obligatorios y sus longitudes máximas.";}
             }
         }
         else if(databaseUnavailable(ex)){status=HttpStatus.SERVICE_UNAVAILABLE;message="La base de datos no está disponible. Intenta nuevamente más tarde.";}
@@ -47,11 +54,41 @@ public class ApiExceptionHandler {
         else if(ex instanceof java.time.format.DateTimeParseException||ex instanceof NumberFormatException){status=HttpStatus.BAD_REQUEST;message="Revisa el formato de los números, identificadores y fechas enviados.";}
         else if(ex instanceof EmptyResultDataAccessException){status=HttpStatus.NOT_FOUND;message="El registro solicitado no existe.";}
         else if(ex instanceof DataAccessResourceFailureException||ex instanceof TransientDataAccessResourceException||ex instanceof RecoverableDataAccessException){status=HttpStatus.SERVICE_UNAVAILABLE;message="La base de datos no está disponible. Intenta nuevamente más tarde.";}
-        else if(ex instanceof java.io.IOException){status=HttpStatus.SERVICE_UNAVAILABLE;message="No fue posible acceder al almacenamiento del servidor.";}
+        else if(storageFailure(ex)){status=HttpStatus.SERVICE_UNAVAILABLE;message="No fue posible escribir el archivo en el almacenamiento del servidor.";}
         else if(ex instanceof IllegalArgumentException){status=HttpStatus.BAD_REQUEST;message=safeMessage(ex.getMessage(),"Los datos enviados no son válidos.");if(message.matches("(?is).*(ya existe|ya está (asignad|registrad)).*"))status=HttpStatus.CONFLICT;}
-        if(status.is5xxServerError()||ex instanceof DataIntegrityViolationException||ex.getCause()!=null)
+        if(status.is5xxServerError()||sql!=null||ex instanceof DataIntegrityViolationException||ex.getCause()!=null)
             log.error("Error en {} {}",req.getMethod(),req.getRequestURI(),sanitized(ex,0));
         return ResponseEntity.status(status).body(body(status,message,req));
+    }
+    private static java.sql.SQLException findSqlException(Throwable error){
+        java.sql.SQLException first=null;
+        for(int depth=0;error!=null&&depth<16;depth++,error=error.getCause()){
+            if(error instanceof java.sql.SQLException sql){
+                for(int next=0;sql!=null&&next<16;next++,sql=sql.getNextException()){
+                    if(first==null)first=sql;
+                    if(Set.of(1364,1054,1062,1451,1452).contains(sql.getErrorCode()))return sql;
+                }
+            }
+        }
+        return first;
+    }
+    private static boolean storageFailure(Throwable error){
+        for(int depth=0;error!=null&&depth<16;depth++,error=error.getCause())if(error instanceof java.io.IOException)return true;
+        return false;
+    }
+    private static boolean storageDenied(Throwable error){
+        for(int depth=0;error!=null&&depth<16;depth++,error=error.getCause())
+            if(error instanceof java.nio.file.AccessDeniedException||error instanceof SecurityException)return true;
+        return false;
+    }
+    private static boolean diskFull(Throwable error){
+        for(int depth=0;error!=null&&depth<16;depth++,error=error.getCause()){
+            if(error instanceof java.io.IOException){
+                String reason=Objects.toString(error.getMessage(),"").toLowerCase(Locale.ROOT);
+                if(reason.contains("no space left")||reason.contains("not enough space")||reason.contains("disk full")||reason.contains("insufficient disk space")||reason.contains("espacio insuficiente")||reason.contains("no hay espacio suficiente")||reason.contains("disco lleno"))return true;
+            }
+        }
+        return false;
     }
     private static boolean databaseUnavailable(Throwable error){
         for(int depth=0;error!=null&&depth<16;depth++,error=error.getCause()){
@@ -72,15 +109,15 @@ public class ApiExceptionHandler {
         return result.getFieldErrors().stream().findFirst().map(e->"El campo "+fieldLabel(e.getField())+" "+safeMessage(e.getDefaultMessage(),"no es válido")+".").orElse("Los datos enviados no son válidos.");
     }
     private static String fieldLabel(String field){return switch(field.toLowerCase(Locale.ROOT)){case "email"->"correo electrónico";case "password"->"contraseña";case "username"->"usuario";case "versionname"->"versión";default->"indicado";};}
-    private static String integrityMessage(DataIntegrityViolationException ex){
-        String detail=Objects.toString(ex.getMostSpecificCause().getMessage(),"").toLowerCase(Locale.ROOT);
+    private static String integrityMessage(Throwable ex){
+        Throwable cause=ex instanceof DataIntegrityViolationException d?d.getMostSpecificCause():ex;
+        String detail=Objects.toString(cause.getMessage(),"").toLowerCase(Locale.ROOT);
         if(detail.contains("uk_users_username"))return "El nombre de usuario ya está registrado.";
         if(detail.contains("uk_users_email"))return "El correo electrónico ya está registrado.";
         if(detail.contains("uq_application_versions_code"))return "Esta versión ya está registrada para la aplicación.";
         if(detail.contains("uq_licensed_applications_code")||detail.contains("uq_licensed_applications_package"))return "La aplicación ya está registrada.";
         if(detail.contains("uq_user_application_access")||detail.contains("uk_user_system")||detail.contains("uk_role_permissions"))return "La relación ya está asignada.";
         if(detail.contains("uq_licenses_active_identity"))return "Ya existe una licencia activa para esta aplicación, usuario y dispositivo.";
-        if(ex.getMostSpecificCause() instanceof java.sql.SQLException sql&&sql.getErrorCode()==1451)return "El registro no puede modificarse porque está siendo utilizado.";
         return "Existe un conflicto con los datos enviados.";
     }
     private static String safeMessage(String message,String fallback){

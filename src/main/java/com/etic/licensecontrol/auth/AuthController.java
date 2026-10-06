@@ -37,5 +37,5 @@ public class AuthController {
         repo.loginEvent(user,true,null,system);
         return Map.of("token",token,"user",profile);
     }
-    @GetMapping("/me") Map<String,Object> me(Authentication a){return repo.profile(a.getName());}
+    @GetMapping("/me") Map<String,Object> me(Authentication a){return repo.profile(a.getName(),(String)a.getDetails());}
 }

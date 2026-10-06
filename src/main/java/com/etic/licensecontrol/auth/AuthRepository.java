@@ -8,12 +8,12 @@ import org.springframework.stereotype.Repository;
 public class AuthRepository {
     private final NamedParameterJdbcTemplate db;
     AuthRepository(NamedParameterJdbcTemplate db){this.db=db;}
-    Optional<Map<String,Object>> loginUser(String username){return db.query("SELECT u.*,ut.Code User_Type FROM users u JOIN user_types ut ON ut.Id_User_Type=u.Id_User_Type WHERE u.Username=:username AND ut.Is_Active=TRUE",Map.of("username",username),(r,n)->{Map<String,Object> m=new LinkedHashMap<>();var md=r.getMetaData();for(int i=1;i<=md.getColumnCount();i++)m.put(md.getColumnLabel(i),r.getObject(i));return m;}).stream().findFirst();}
+    Optional<Map<String,Object>> loginUser(String username){return db.query("SELECT u.*,ut.Code User_Type FROM users u JOIN user_types ut ON ut.Id_User_Type=u.Id_User_Type WHERE u.Username=:username",Map.of("username",username),(r,n)->{Map<String,Object> m=new LinkedHashMap<>();var md=r.getMetaData();for(int i=1;i<=md.getColumnCount();i++)m.put(md.getColumnLabel(i),r.getObject(i));return m;}).stream().findFirst();}
     boolean isAuthorized(String id){return isAuthorized(id,"LICENSE_CONTROL");}
     boolean upgradePasswordHash(String id,String previous,String replacement){
         return db.update("UPDATE users SET Password_Hash=:replacement WHERE Id_User=:id AND BINARY Password_Hash=BINARY :previous",Map.of("id",id,"previous",previous,"replacement",replacement))==1;
     }
-    boolean isAuthorized(String id,String system){Integer n=db.queryForObject("SELECT COUNT(*) FROM users u JOIN user_types ut ON ut.Id_User_Type=u.Id_User_Type AND ut.Is_Active=TRUE JOIN user_system_access usa ON usa.Id_User=u.Id_User JOIN systems s ON s.Id_System=usa.Id_System JOIN user_system_roles usr ON usr.Id_User=u.Id_User AND usr.Id_System=s.Id_System JOIN roles r ON r.Id_Role=usr.Id_Role AND r.Id_System=s.Id_System WHERE u.Id_User=:id AND u.Is_Active=TRUE AND u.Status NOT IN ('SUSPENDED','LOCKED') AND s.Code=:system AND s.Is_Active=TRUE AND usa.Is_Active=TRUE AND usa.Status NOT IN ('SUSPENDED','REVOKED') AND usr.Is_Active=TRUE AND r.Is_Active=TRUE",Map.of("id",id,"system",system),Integer.class);return n!=null&&n>0;}
+    boolean isAuthorized(String id,String system){Integer n=db.queryForObject("SELECT COUNT(*) FROM users u JOIN user_system_access usa ON usa.Id_User=u.Id_User JOIN systems s ON s.Id_System=usa.Id_System WHERE u.Id_User=:id AND u.Is_Active=TRUE AND u.Status NOT IN ('SUSPENDED','LOCKED') AND s.Code=:system AND s.Is_Active=TRUE AND usa.Is_Active=TRUE AND usa.Status='ACTIVE'",Map.of("id",id,"system",system),Integer.class);return n!=null&&n>0;}
     Map<String,Object> profile(String id){return profile(id,"LICENSE_CONTROL");}
     Map<String,Object> profile(String id,String system){
         var params=Map.of("id",id,"system",system);
