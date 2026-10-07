@@ -1,159 +1,128 @@
-LICENSE CONTROL — CONTRATO DEVICE_ONLY V2
+LICENSE CONTROL — CONTRATO FINAL DE LICENCIAMIENTO V3
 
-CONCEPTOS
-systems es el catálogo maestro; system_licensing es opcional.
-Solo systems.System_Type=ANDROID puede configurar licenciamiento de dispositivo,
-Package_Name, Offline_Validity_Days y versiones APK. WEB no utiliza esta extensión.
-WEB: usuario -> user_system_access -> roles/permisos opcionales.
-No requiere cliente, entitlement, dispositivo, código ni user_application_access.
-USER_DEVICE: usuario -> user_application_access -> Max_Devices -> dispositivo
--> licencia. Mantiene su vigencia existente, independiente de DEVICE_ONLY.
-No requiere cliente ni roles. Android ETIC permanece con su flujo legacy.
-DEVICE_ONLY: cliente -> license_entitlements -> seats -> códigos -> dispositivos.
-No consulta usuarios, accesos de usuarios, roles ni permisos.
-Licencias ofrece dos pestañas independientes: Usuario + dispositivo (licenses
-USER_DEVICE, sin cliente/entitlement obligatorio) y Solo dispositivo (entitlements).
+MODELO
+systems es el catálogo maestro. WEB usa users, user_system_access y roles/permisos
+opcionales. WEB no requiere licencias de dispositivos.
+ANDROID: systems -> system_licensing -> licenses -> license_devices -> licensed_devices.
+system_licensing es opcional para el sistema y solo admite ANDROID.
+Contiene Id_System, Licensing_Mode, Package_Name, Offline_Validity_Days (1..365),
+Is_Active, Created_At, Modified_At.
+licenses es la única entidad comercial: modalidad, propietario, vigencia y seats.
+DEVICE_ONLY exige cliente; Id_User es NULL. USER_DEVICE exige usuario; cliente opcional.
+No hay una entidad separada para asignar la licencia a un usuario.
 
-DISTRIBUCIÓN DEL APK
-Suite conserva login, consulta de aplicaciones autorizadas y descarga publicada.
-Una descarga no registra dispositivos, crea licencias, consume códigos ni seats.
-El APK puede distribuirse por Suite, USB, correo, MDM o copia manual: tener el
-archivo no concede licencia. La futura APK debe bloquear su funcionalidad
-protegida hasta obtener activación válida. Suite y APK no fueron modificados.
+ADMINISTRACIÓN
+POST /api/admin/licenses {Id_System,Id_Customer?,Id_User?,Term_Type,Seat_Count}
+La modalidad se obtiene de system_licensing; no la decide el cliente.
+MONTHLY/ANNUAL/PERPETUAL: el servidor calcula Activated_At en UTC y Expires_At
+a un mes/año calendario, o NULL. No se aceptan fechas de vigencia manuales.
+GET /api/admin/licenses e /api/admin/licenses/{id}: propietario, sistema,
+Effective_Status, Used_Seats, Available_Seats y detalle de dispositivos.
+GET /api/admin/licenses?Id_User={id} filtra licencias del usuario.
+POST /api/admin/licenses/{id}/status {status:ACTIVE|SUSPENDED|REVOKED}
+REVOKED es terminal. EXPIRED se deriva de Expires_At; nunca se almacena como Status.
+Una suspensión conserva seats; revocar revoca vínculos activos/suspendidos.
+POST /api/admin/licenses/{id}/devices {deviceId}: solo USER_DEVICE.
+Vincula un dispositivo ya registrado y activo, con bloqueo y control de seats.
+No registra dispositivos manualmente ni genera códigos USER_DEVICE.
+POST /api/admin/devices/{id}/retire {reason:LOST|REPLACED|REVOKED}
+Retira el dispositivo y sus vínculos, conserva historial y libera seats.
+Seats usados: license_devices.Status IN ('ACTIVE','SUSPENDED').
+REVOKED, LOST y REPLACED no consumen seats.
 
-ADMINISTRACIÓN COMERCIAL
-Clientes: Name, Contact_Name, Email, Phone, Is_Active; sin estructura adicional.
-POST /api/admin/entitlements:
-{Id_Customer,Id_System,Term_Type,Seat_Count}
-Solo DEVICE_ONLY; cliente/sistema activos; Seat_Count entero positivo.
-Activated_At es la fecha UTC de creación del entitlement, calculada por servidor.
-MONTHLY: Expires_At=Activated_At+1 mes calendario.
-ANNUAL: Expires_At=Activated_At+1 año calendario.
-PERPETUAL: Expires_At=NULL. No se aceptan fechas manuales.
-GET /api/admin/entitlements y GET /api/admin/entitlements/{id}:
-incluyen cliente, sistema, estado efectivo, seats en uso/disponibles y activaciones.
-POST /api/admin/entitlements/{id}/status {status}:
-ACTIVE -> SUSPENDED/REVOKED; SUSPENDED -> ACTIVE/REVOKED.
-REVOKED es terminal; no se reactiva una licencia vencida.
-EXPIRED se deriva de Expires_At; no requiere cron ni UPDATE masivo.
-Is_Active es baja administrativa; no sustituye Status.
+CÓDIGOS DEVICE_ONLY
+POST /api/admin/enrollment-codes {licenseId,expiresAt,sendEmail?}
+expiresAt ISO UTC futuro, máximo siete días; distinto del vencimiento comercial.
+Solo licenses DEVICE_ONLY activas y vigentes.
+Código aleatorio de 256 bits, mostrado una vez; se guarda únicamente su SHA-256.
+device_enrollment_codes: Id_Enrollment,Id_License,Id_Device NULL,Code_Hash,
+Expires_At,Used_At,Created_At,Created_By.
+No requiere dispositivo previo y no consume/reserva seats al generarlo.
+sendEmail mantiene el envío al correo configurado del cliente después del commit.
+Si SMTP falla, se devuelven los códigos creados y emailSent=false; no se regeneran.
+GET /api/admin/enrollment-codes no expone códigos ni hashes.
 
-SEATS Y REEMPLAZO
-Cada asignación licenses ACTIVE/SUSPENDED con Id_Entitlement consume un seat.
-REVOKED no consume. Los conteos se calculan siempre; no se persisten acumulados.
-Generar códigos NO reserva ni consume seats y no revoca otros códigos pendientes.
-Enrollment bloquea entitlement, vuelve a validar código con lectura bloqueante,
-cuenta asignaciones vigentes con FOR UPDATE y compara Seat_Count.
-Esto evita usar un snapshot anterior bajo concurrencia.
-Sin cupo: HTTP 403, code=NO_SEATS_AVAILABLE; código queda sin consumir.
-POST /api/admin/devices/{id}/retire {reason:"LOST"|"REPLACED"|"REVOKED"}:
-revoca asignaciones DEVICE_ONLY y dispositivo, conserva historial y libera cupo.
-No aumenta Seat_Count; la clave anterior queda bloqueada para futuras renovaciones.
-Revocar entitlement revoca sus asignaciones y códigos pendientes.
-Suspender entitlement o dispositivo NO libera seats.
-
-CÓDIGOS Y ENROLLMENT
-POST /api/admin/enrollment-codes {entitlementId,expiresAt}
-expiresAt es ISO UTC futuro con máximo de 7 días.
-Código aleatorio de 256 bits, mostrado una sola vez; solo se guarda hash vinculado
-al sistema. Pertenece al entitlement; Id_Device es NULL hasta su consumo.
-GET /api/admin/enrollment-codes: historial sin código ni hash.
-Causa definitiva del error Generar códigos en producción: SCHEMA MISMATCH,
-device_enrollment_codes.Id_Device estaba definido NOT NULL. No era falta de
-clave privada de firma. El VPS se corrigió retirando temporalmente la FK,
-permitiendo NULL y recreando la FK.
-Definición formal: device_enrollment_codes.Id_Device CHAR(36) NULL DEFAULT NULL,
-con FK hacia licensed_devices(Id_Device). La migración existente
-database/allow_unbound_enrollment_codes.sql detecta la FK, conserva nombre y reglas,
-y la retira antes del ajuste/recreación para evitar el conflicto de nombre de FK
-en MySQL. Ejecutar sin escrituras concurrentes durante este cambio; ante error
-del ALTER intenta restaurar la FK original y propaga el error. Es repetible y aborta
-si encuentra identificadores de más de 36 caracteres, sin truncarlos.
-No se crearon tablas ni se modificó licensed_devices. Generar código mantiene
-Id_Device=NULL; enrollment registra el dispositivo y después vincula Id_Device.
-
-POST /api/mobile/device/enroll:
+ENROLLMENT
+POST /api/mobile/device/enroll
 {system,packageName,code,publicKey,fingerprint,signature,
  displayName?,manufacturer?,model?,androidVersion?,appVersion?}
-system es systems.Code. No enviar un Id_Device previo ni credenciales de usuario.
-Clave privada EC P-256 no exportable, generada en Android Keystore.
-publicKey: X.509 SPKI Base64 estándar o PEM.
-fingerprint: SHA-256 del DER SPKI, hexadecimal lowercase.
-signature: SHA256withECDSA, DER en Base64 estándar, sobre estos bytes UTF-8:
+system es systems.Code; packageName debe coincidir con system_licensing.Package_Name.
+La clave privada EC P-256 no exportable se genera en Android Keystore.
+publicKey: X.509 SPKI en Base64 estándar o PEM.
+fingerprint: SHA-256 DER SPKI, hexadecimal lowercase.
+signature: SHA256withECDSA, DER Base64 estándar, sobre UTF-8:
 LC-ENROLL-V1\n{system}\n{packageName}\n{code}\n{fingerprint}
-Separadores LF reales, sin LF final. Se mantiene la transcripción V1.
-El servidor verifica posesión de clave; no confía en IMEI/MAC/serial/ANDROID_ID.
-No acredita hardware seguro por metadata ni afirma verificar attestation.
-Con prueba, cupo y licencia válidos crea dispositivo AUTO y asignación licenses;
-consume código y enlaza Id_Device en la misma transacción.
-La firma inicial se emite dentro de esa misma transacción. Un fallo, incluida
-la ausencia de clave de firma, revierte registro, seat y consumo del código.
-Clave ya registrada no se sobrescribe. Respuesta: deviceId,licenseId (asignación
-interna),deviceFingerprint,credential y el resto del contrato de credencial V2.
-Id_Application e Id_Usuario quedan NULL.
-licenses.Valid_Until conserva compatibilidad técnica con su columna DATE NOT NULL:
-fecha comercial, o 9999-12-31 para PERPETUAL. Nunca es la autoridad comercial;
-el nuevo validador consulta Expires_At del entitlement, incluido NULL.
+Separadores LF reales; sin LF final. El código no se transforma.
+El servidor busca Code_Hash, obtiene Id_License, bloquea la licencia FOR UPDATE,
+valida estado/vigencia/sistema/modalidad y vuelve a leer el código bajo bloqueo.
+Cuenta vínculos ACTIVE/SUSPENDED con lectura bloqueante y valida Seat_Count.
+Verifica posesión de clave, registra el dispositivo o reutiliza su identidad activa
+por fingerprint, sin sobrescribir la clave ni rehabilitar dispositivos retirados.
+Inserta license_devices ACTIVE, vincula Id_Device al código y marca Used_At.
+Emite la credencial dentro de la misma transacción. Todo se revierte si falla.
+No crea una segunda licencia. No requiere usuario, roles, sesión ni JWT web.
 
-CHALLENGE / VALIDACIÓN
+CHALLENGE / VERIFY / REFRESH
 POST /api/mobile/device/{deviceId}/challenge {licenseId}
-Devuelve challengeId,nonce,expiresAt,deviceId,licenseId.
-Nonce con aleatoriedad de 256 bits y contexto de licencia; expira en 120 segundos.
-Máximo 10 challenges/dispositivo/minuto; exceso 429.
-Firmar los bytes decodificados Base64URL del nonce con SHA256withECDSA,
-y enviar firma DER en Base64 estándar.
+Respuesta: challengeId,nonce,expiresAt,deviceId,licenseId.
+device_challenges usa Id_Challenge,Id_Device,Nonce,Expires_At,Used_At,Created_At.
+Nonce Base64URL de bytes con contexto de licencia y aleatoriedad de 256 bits.
+Expira en 120 segundos; máximo diez challenges/dispositivo/minuto.
+Firmar bytes decodificados del nonce mediante SHA256withECDSA.
 POST /api/mobile/device/{deviceId}/verify
 POST /api/mobile/device/{deviceId}/validate
 POST /api/mobile/device/{deviceId}/refresh
-Body común: {licenseId,challengeId,signature}.
-Cada llamada requiere challenge nuevo. Los tres validan, consumen prueba y emiten
-credencial; verify no es un ticket reusable. Sin HttpSession ni JWT de usuario.
-Revalida sistema, entitlement, asignación, dispositivo y vigencia bajo bloqueo.
-Registra SUCCESS/DENIED/ERROR en license_validation_events sin secretos.
+Body: {licenseId,challengeId,signature}; firma DER en Base64 estándar.
+Cada llamada requiere challenge nuevo, de un solo uso y de la misma licencia.
+Valida licenses, license_devices, licensed_devices y sistema antes de emitir.
+No acepta vínculos suspendidos, revocados, perdidos ni reemplazados.
 
-RESPUESTAS EXPLÍCITAS
-HTTP 403 {allowed:false,code,message}:
-LICENSE_SUSPENDED, LICENSE_REVOKED, LICENSE_EXPIRED, DEVICE_REVOKED,
-NO_SEATS_AVAILABLE; otros rechazos de identidad/código usan ACCESS_DENIED.
-La futura APK inutiliza credencial local y bloquea tras denegación explícita.
-No tratar 401/403, 429 o 5xx como desconexión para habilitar fallback offline.
-Solo fallo real de conectividad permite usar credencial todavía vigente.
-
-CREDENCIAL OFFLINE
-JWS compacto ES256, typ=LC-OFFLINE-LICENSE, kid configurado externamente.
-Firma de 64 bytes r||s (P1363), no DER.
-Payload formatVersion=2:
-entitlementId,licenseId,systemId,deviceId,deviceFingerprint,packageName,
+CREDENCIAL OFFLINE V3
+JWS compacto ES256, typ=LC-OFFLINE-LICENSE, kid externo.
+Firma de 64 bytes r||s (P1363), distinta del DER de las pruebas.
+Payload:
+formatVersion=3,licenseId,systemId,deviceId,packageName,fingerprint,
 issuedAt,expiresAt,offlineUntil,status=ACTIVE.
-Tiempos epoch UTC en segundos; expiresAt=NULL solo en PERPETUAL.
-ventana=system_licensing.Offline_Validity_Days, configurable por sistema (1..30).
-offlineUntil=min(expiresAt,issuedAt+ventana) para MONTHLY/ANNUAL.
-PERPETUAL: offlineUntil=issuedAt+ventana. Nunca hay credencial offline permanente.
-Respuesta también incluye allowed=true y serverTime.
-APK debe fijar clave pública/kid/alg/typ esperados, verificar firma, versión,
-identidad, package, status, offlineUntil y expiresAt cuando no sea NULL.
-No aceptar claves públicas suministradas por la propia credencial.
-Persistir última hora confiable y usar tiempo monotónico; detectar retrocesos
-y reinicios. No extender licencia usando solo System.currentTimeMillis.
-Si el tiempo no es confiable, exigir renovación.
-Una revocación no se conoce instantáneamente sin conexión; el límite es offlineUntil.
+Únicos IDs: licenseId,systemId,deviceId.
+Tiempos epoch UTC segundos; expiresAt NULL en PERPETUAL.
+offlineUntil=min(expiresAt,issuedAt+Offline_Validity_Days), o solo la ventana
+offline para PERPETUAL. Respuesta: mismos campos, allowed=true, credential,serverTime.
+El cliente debe fijar clave/kid/alg/typ y comprobar firma, versión, identidad,
+paquete, fingerprint, estado y vigencias con tiempo confiable/monotónico.
+Una respuesta negativa invalida el uso offline. Una desconexión real permite
+usar solo una credencial firmada aún vigente. Revocar requiere conectividad
+para ser conocido antes del vencimiento de la ventana.
+Este contrato requiere actualizar posteriormente la APK; no se modificó aquí.
 
-CONFIGURACIÓN / DESPLIEGUE FUTURO
+ERRORES FUNCIONALES
+HTTP 403 {allowed:false,code,message}:
+LICENSE_NOT_FOUND,LICENSE_SUSPENDED,LICENSE_REVOKED,LICENSE_EXPIRED,
+NO_SEATS_AVAILABLE,DEVICE_REVOKED,ENROLLMENT_CODE_INVALID,
+ENROLLMENT_CODE_EXPIRED,ENROLLMENT_CODE_USED,CHALLENGE_INVALID,CHALLENGE_EXPIRED.
+ACCESS_DENIED para prueba de identidad/modalidad no autorizada.
+429 para límite de challenges; 503 CREDENTIAL_UNAVAILABLE si no puede firmarse.
+No confundir respuestas HTTP negativas con falta de conectividad.
+
+EVENTOS
+license_validation_events:
+Id_Validation_Event UUID,Id_License,Id_Device,Id_System,Event_Type,
+Success,Failure_Code,Created_At.
+Los rechazos se registran fuera de la transacción revertida, sin secretos.
+
+VERSIONES Y DESCARGAS
+POST /api/admin/systems/{systemId}/versions, multipart APK y metadatos.
+application_versions usa Id_System y las columnas del esquema final:
+Id_Version,Version_Name,Original_File_Name,Storage_File_Name,Sha256,File_Size,
+Minimum_Android,Release_Notes,Mandatory,Published,Is_Active,
+Created_At,Created_By,Modified_At,Modified_By.
+/api/portal/apps, /apps/{id}, /apps/{id}/versions y /downloads/{versionId}
+usan systems y application_versions.Id_System, con user_system_access activo
+para autorizar la distribución; no consumen seats ni registran dispositivos.
+No se modificó el frontend Suite.
+
+FIRMA
 LICENSE_CONTROL_OFFLINE_PRIVATE_KEY_PATH: PEM PKCS#8 EC P-256 externo.
-LICENSE_CONTROL_OFFLINE_KEY_ID: identificador de clave.
-Offline_Validity_Days es la autoridad para la ventana; el valor global anterior
-LICENSE_CONTROL_OFFLINE_VALIDITY_SECONDS no se usa para nuevas credenciales.
-También se admite LICENSING_SIGNING_PRIVATE_KEY como PEM PKCS#8 en entorno;
-si se configura el archivo, tiene prioridad. La clave se lee solo al firmar.
-Crear clientes/entitlements o generar códigos nunca requiere la clave de firma.
-La generación verifica columnas obligatorias del esquema conectado y devuelve
-503 ENROLLMENT_SCHEMA_NOT_READY si exige datos que ese flujo no debe suministrar;
-los nombres de columnas quedan exclusivamente en el log del backend.
-Montar clave read-only con permisos restringidos; no se generaron secretos.
-Sin clave la emisión falla cerrada con 503. No reutilizar secreto HS256 web.
-Distribuir solo clave pública a la APK por canal confiable, prever rotación.
-Usar HTTPS y límites de peticiones/tamaño en proxy antes de exposición pública.
-No hubo despliegue VPS ni modificaciones APK/ETIC.
-licensed_applications, system_application_links, Id_Application y FK legacy siguen.
-Contrato listo para implementar la futura APK DEVICE_ONLY; validación de este
-trabajo limitada a compilación, sin pruebas de ejecución ni E2E.
+Alternativa: LICENSING_SIGNING_PRIVATE_KEY. El archivo tiene prioridad.
+LICENSE_CONTROL_OFFLINE_KEY_ID configura kid.
+Solo distribuir la clave pública; HTTPS obligatorio.
+No se ejecutó el script de reset ni se modificó la base de datos en esta tarea.
