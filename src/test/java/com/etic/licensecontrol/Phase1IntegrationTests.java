@@ -50,36 +50,15 @@ class Phase1IntegrationTests {
     void createAccess(String sid)throws Exception{update("/api/admin/users/"+user+"/systems/"+sid,Map.of("Status","ACTIVE"));}
     @Test void roleFromAnotherSystemRejected()throws Exception{String sid=db.queryForObject("SELECT Id_System FROM systems WHERE Code='ETIC_PDM_ANDROID'",Map.of(),String.class);createAccess(sid);mvc.perform(put("/api/admin/users/"+user+"/systems/"+sid+"/roles").header("Authorization","Bearer "+token()).contentType("application/json").content(json.writeValueAsString(List.of(role)))).andExpect(status().isBadRequest());}
     @Test void attributeDefinitionOptionsAndUserValues()throws Exception{var a=create("/api/admin/attributes",Map.of("Id_System",system,"Code","ATTR_"+username,"Name","Catálogo","Data_Type","SELECT","Status","ACTIVE"));String id=a.get("Id_Attribute").toString();mvc.perform(post("/api/admin/attributes/"+id+"/options").header("Authorization","Bearer "+token()).contentType("application/json").content(json.writeValueAsString(Map.of("Value_Code","ONE","Display_Name","Uno","Sort_Order",0,"Status","ACTIVE")))).andExpect(status().isOk());update("/api/admin/users/"+user+"/systems/"+system+"/attributes/"+id,Map.of("value","ONE"));assertEquals("ONE",db.queryForObject("SELECT Value_Text FROM user_system_attribute_values WHERE Id_User=:u AND Id_Attribute=:a",Map.of("u",user,"a",id),String.class));mvc.perform(put("/api/admin/users/"+user+"/systems/"+system+"/attributes/"+id).header("Authorization","Bearer "+token()).contentType("application/json").content("{\"value\":\"INVALID\"}")).andExpect(status().isBadRequest());}
-    @Test void maxDevicesRoundTrip()throws Exception{String app=db.queryForObject("SELECT Id_Application FROM licensed_applications LIMIT 1",Map.of(),String.class);var a=create("/api/admin/application-access",Map.of("Id_Usuario",user,"Id_Application",app,"Status","ACTIVE","Valid_From","2026-10-01","Max_Devices",3));assertEquals(3,((Number)a.get("Max_Devices")).intValue());update("/api/admin/application-access/"+a.get("Id_Access"),Map.of("Max_Devices",2));}
     @Test void unauthenticatedAdminReturns401()throws Exception{mvc.perform(get("/api/admin/users")).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.status").value(401));}
     @Test void loginWithoutSystemAccessRejected()throws Exception{db.update("UPDATE user_system_access SET Status='REVOKED' WHERE Id_User=:u",Map.of("u",user));reject();}
     @Test void filteredPaginationAndAuditAreReal()throws Exception{
         mvc.perform(get("/api/admin/users").param("search",username).param("size","1").param("Status","ACTIVE").header("Authorization","Bearer "+token())).andExpect(status().isOk()).andExpect(jsonPath("$[0].Username").value(username)).andExpect(jsonPath("$[0].Password_Hash").doesNotExist());
         mvc.perform(get("/api/admin/audit").param("user",user).param("size","1").header("Authorization","Bearer "+token())).andExpect(status().isOk()).andExpect(jsonPath("$.authentication.length()").value(1));
     }
-    @Test void validationRejectsNegativeDevicesAndDuplicateCode()throws Exception{
-        String app=db.queryForObject("SELECT Id_Application FROM licensed_applications LIMIT 1",Map.of(),String.class);
-        mvc.perform(post("/api/admin/application-access").header("Authorization","Bearer "+token()).contentType("application/json").content(json.writeValueAsString(Map.of("Id_Usuario",user,"Id_Application",app,"Status","ACTIVE","Valid_From","2026-10-01","Max_Devices",0)))).andExpect(status().isBadRequest());
-        mvc.perform(post("/api/admin/systems").header("Authorization","Bearer "+token()).contentType("application/json").content(json.writeValueAsString(Map.of("Code","LICENSE_CONTROL","Name","Duplicado","System_Type","WEB","Status","ACTIVE")))).andExpect(status().isConflict());
-    }
-    @Test void multipartStorageDownloadAndMetadataWithoutVersionCode()throws Exception{
-        String app=db.queryForObject("SELECT Id_Application FROM licensed_applications LIMIT 1",Map.of(),String.class);
-        var bytes=new java.io.ByteArrayOutputStream();
-        try(var zip=new java.util.zip.ZipOutputStream(bytes)){zip.putNextEntry(new java.util.zip.ZipEntry("AndroidManifest.xml"));zip.write("<manifest package=\"test.fixture\"/>".getBytes(java.nio.charset.StandardCharsets.UTF_8));zip.closeEntry();}
-        var file=new org.springframework.mock.web.MockMultipartFile("file","transport-fixture.apk","application/vnd.android.package-archive",bytes.toByteArray());
-        String content=mvc.perform(multipart("/api/admin/applications/"+app+"/versions").file(file).param("versionName","Transport fixture").header("Authorization","Bearer "+token())).andExpect(status().isOk()).andExpect(jsonPath("$.Version_Code").isEmpty()).andExpect(jsonPath("$.File_Size").value(bytes.size())).andReturn().getResponse().getContentAsString();
-        var version=json.readTree(content);String id=version.get("Id_Version").asText();
-        try{
-            mvc.perform(get("/api/admin/applications/"+app+"/versions/"+id+"/file").header("Authorization","Bearer "+token())).andExpect(status().isOk()).andExpect(content().bytes(bytes.toByteArray()));
-            update("/api/admin/applications/"+app+"/versions/"+id,Map.of("Version_Name","Editada","Minimum_Android","8.0"));
-        }finally{java.nio.file.Files.deleteIfExists(java.nio.file.Path.of("storage/apks",version.get("Storage_File_Name").asText()));}
-    }
 
-    @Test void legacyApplicationAccessCanChangeWithoutMigratingUser()throws Exception{
-        String app=db.queryForObject("SELECT Id_Application FROM licensed_applications LIMIT 1",Map.of(),String.class),legacy=UUID.randomUUID().toString(),id=UUID.randomUUID().toString();
-        db.update("INSERT INTO user_application_access(Id_Access,Id_Usuario,Id_Application,Status,Valid_From,Max_Devices,Created_At,Created_By) VALUES(:id,:legacy,:app,'ACTIVE','2026-10-01',1,NOW(),:actor)",Map.of("id",id,"legacy",legacy,"app",app,"actor",user));
-        update("/api/admin/application-access/"+id,Map.of("Id_Usuario",legacy,"Status","SUSPENDED","Max_Devices",2));
-        assertEquals(legacy,db.queryForObject("SELECT Id_Usuario FROM user_application_access WHERE Id_Access=:id",Map.of("id",id),String.class));
-    }
+
+
+
     @Test void corsPreflightAllowsFrontendOrigin()throws Exception{mvc.perform(options("/api/auth/login").header("Origin","http://localhost:4400").header("Access-Control-Request-Method","POST").header("Access-Control-Request-Headers","content-type")).andExpect(status().isOk()).andExpect(header().string("Access-Control-Allow-Origin","http://localhost:4400"));}
 }

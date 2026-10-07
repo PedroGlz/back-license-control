@@ -115,9 +115,7 @@ public class ApiExceptionHandler {
         if(detail.contains("uk_users_username"))return "El nombre de usuario ya está registrado.";
         if(detail.contains("uk_users_email"))return "El correo electrónico ya está registrado.";
         if(detail.contains("uq_application_versions_code"))return "Esta versión ya está registrada para la aplicación.";
-        // LEGACY TEMPORAL: traducción de constraints conservadas en la base de datos.
-        if(detail.contains("uq_licensed_applications_code")||detail.contains("uq_licensed_applications_package"))return "La aplicación ya está registrada.";
-        if(detail.contains("uq_user_application_access")||detail.contains("uk_user_system")||detail.contains("uk_role_permissions"))return "La relación ya está asignada.";
+        if(detail.contains("uk_user_system")||detail.contains("uk_role_permissions"))return "La relación ya está asignada.";
         if(detail.contains("uq_licenses_active_identity"))return "Ya existe una licencia activa para esta aplicación, usuario y dispositivo.";
         return "Existe un conflicto con los datos enviados.";
     }

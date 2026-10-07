@@ -12,7 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.json.JsonMapper;
 
-/** P-256 / SHA256withECDSA, como DeviceSecurityService legacy, sin sus dependencias ETIC. */
+/** P-256 / SHA256withECDSA para pruebas de posesión y firma offline. */
 @Service
 public class DeviceCrypto {
     private final SecureRandom random = new SecureRandom();
