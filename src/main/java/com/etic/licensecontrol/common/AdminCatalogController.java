@@ -34,13 +34,14 @@ public class AdminCatalogController {
             crud.db().update("UPDATE system_licensing SET Is_Active=FALSE,Modified_At=UTC_TIMESTAMP(6) WHERE Id_System=:system",params);
             crud.db().update("UPDATE systems SET Package_Name=NULL WHERE Id_System=:system",params);row.put("Package_Name",null);return;
         }
-        Integer offline=null;
-        if(days!=null){try{offline=Integer.valueOf(days.toString());}catch(Exception ex){throw new IllegalArgumentException("Los días offline deben ser un entero");}if(offline<1||offline>365)throw new IllegalArgumentException("Los días offline deben estar entre 1 y 365");}
-        params.addValue("days",offline);
-        if(!supplied){crud.db().update("UPDATE system_licensing SET Package_Name=:package,Offline_Validity_Days=COALESCE(:days,Offline_Validity_Days),Modified_At=UTC_TIMESTAMP(6) WHERE Id_System=:system",params);return;}
-        if(mode==null||mode.toString().isBlank()){crud.db().update("UPDATE system_licensing SET Is_Active=FALSE,Modified_At=UTC_TIMESTAMP(6) WHERE Id_System=:system",params);return;}
+        if(mode==null||mode.toString().isBlank())throw new IllegalArgumentException("La modalidad de licenciamiento es obligatoria para Android");
         if(!Set.of("USER_DEVICE","DEVICE_ONLY").contains(mode.toString()))throw new IllegalArgumentException("Modalidad de licenciamiento inválida");
-        if(row.get("Package_Name")==null||row.get("Package_Name").toString().isBlank())throw new IllegalArgumentException("Package Name es obligatorio para licenciamiento Android");
+        if(row.get("Package_Name")==null||row.get("Package_Name").toString().isBlank())throw new IllegalArgumentException("Package Name es obligatorio para Android");
+        if(days==null||days.toString().isBlank())throw new IllegalArgumentException("Los días offline son obligatorios para Android");
+        Integer offline;
+        try{offline=Integer.valueOf(days.toString());}catch(Exception ex){throw new IllegalArgumentException("Los días offline deben ser un entero");}
+        if(offline<1||offline>365)throw new IllegalArgumentException("Los días offline deben estar entre 1 y 365");
+        params.addValue("days",offline);
         params.addValue("mode",mode);
         if(crud.db().queryForObject("SELECT COUNT(*) FROM system_licensing WHERE Id_System=:system",params,Integer.class)>0)
             crud.db().update("UPDATE system_licensing SET Package_Name=:package,Licensing_Mode=:mode,Offline_Validity_Days=COALESCE(:days,Offline_Validity_Days),Is_Active=TRUE,Modified_At=UTC_TIMESTAMP(6) WHERE Id_System=:system",params);
