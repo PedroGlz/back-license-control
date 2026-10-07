@@ -23,7 +23,7 @@ public class DeviceLicensingService {
     public record Enrollment(String system,String packageName,String code,String publicKey,String fingerprint,String signature,
         String manufacturer,String model,String androidVersion,String displayName,String appVersion) {}
     public record Proof(String licenseId,String challengeId,String signature) {}
-    public record Activation(String licenseId,Instant expiresAt) {}
+    public record Activation(String licenseId,Integer quantity,Instant expiresAt) {}
 
     public List<Map<String,Object>> codes() {
         var rows=db.queryForList("SELECT e.Id_Enrollment,e.Id_License,e.Id_Device,d.Display_Name,c.Name Customer_Name,s.Name System_Name,l.Status License_Status,l.Expires_At License_Expires_At,e.Expires_At,e.Used_At,e.Created_At FROM device_enrollment_codes e JOIN licenses l ON l.Id_License=e.Id_License JOIN customers c ON c.Id_Customer=l.Id_Customer JOIN systems s ON s.Id_System=l.Id_System LEFT JOIN licensed_devices d ON d.Id_Device=e.Id_Device ORDER BY e.Created_At DESC LIMIT 100",Map.of());
@@ -34,13 +34,20 @@ public class DeviceLicensingService {
         return tx.execute(status->{
             var license=licenses.usable(input.licenseId());
             deviceOnly(license);
+            if(input.quantity()==null||input.quantity()<1)throw new IllegalArgumentException("La cantidad debe ser un entero mayor o igual a 1");
+            int available=Math.max(0,((Number)license.get("Seat_Count")).intValue()-licenses.used(input.licenseId()));
+            if(input.quantity()>available)throw new ResponseStatusException(HttpStatus.CONFLICT,"NO_SEATS_AVAILABLE: La licencia tiene "+available+" dispositivos disponibles.");
             Instant now=Instant.now();
             if(input.expiresAt()==null||!input.expiresAt().isAfter(now)||input.expiresAt().isAfter(now.plusSeconds(604800)))throw new IllegalArgumentException("El código debe vencer dentro de los próximos 7 días");
-            String code=crypto.randomToken(),id=UUID.randomUUID().toString();
-            var p=new MapSqlParameterSource().addValue("license",input.licenseId()).addValue("actor",actor)
-                .addValue("id",id).addValue("hash",DeviceCrypto.hash(code)).addValue("expires",LocalDateTime.ofInstant(input.expiresAt(),ZoneOffset.UTC));
-            db.update("INSERT INTO device_enrollment_codes(Id_Enrollment,Id_License,Id_Device,Code_Hash,Expires_At,Created_By) VALUES(:id,:license,NULL,:hash,:expires,:actor)",p);
-            return Map.of("id",id,"code",code,"expiresAt",input.expiresAt(),"system",license.get("Code"),"packageName",license.get("Package_Name"));
+            Set<String> uniqueCodes=new LinkedHashSet<>();
+            while(uniqueCodes.size()<input.quantity())uniqueCodes.add(crypto.randomToken());
+            for(String code:uniqueCodes) {
+                var p=new MapSqlParameterSource().addValue("license",input.licenseId()).addValue("actor",actor)
+                    .addValue("id",UUID.randomUUID().toString()).addValue("hash",DeviceCrypto.hash(code)).addValue("expires",LocalDateTime.ofInstant(input.expiresAt(),ZoneOffset.UTC));
+                db.update("INSERT INTO device_enrollment_codes(Id_Enrollment,Id_License,Id_Device,Code_Hash,Expires_At,Created_By) VALUES(:id,:license,NULL,:hash,:expires,:actor)",p);
+            }
+            var codes=List.copyOf(uniqueCodes);
+            return Map.of("codes",codes,"code",codes.getFirst(),"expiresAt",input.expiresAt(),"system",license.get("Code"),"packageName",license.get("Package_Name"));
         });
     }
     public Map<String,Object> enroll(Enrollment input) {

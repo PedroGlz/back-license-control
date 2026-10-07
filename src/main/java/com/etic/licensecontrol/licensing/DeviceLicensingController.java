@@ -11,7 +11,7 @@ public class DeviceLicensingController {
     private final MailService mail;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate db;
     public DeviceLicensingController(DeviceLicensingService service,MailService mail,org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate db) { this.service=service;this.mail=mail;this.db=db; }
-    public record GenerateRequest(String licenseId,java.time.Instant expiresAt,boolean sendEmail) {}
+    public record GenerateRequest(String licenseId,Integer quantity,java.time.Instant expiresAt,boolean sendEmail) {}
     @PostMapping("/api/mobile/device/enroll")
     ResponseEntity<?> enroll(@RequestBody DeviceLicensingService.Enrollment body) { return response(service.enroll(body)); }
     @PostMapping("/api/mobile/device/{deviceId}/challenge")
@@ -29,8 +29,8 @@ public class DeviceLicensingController {
         if(body.sendEmail()&&email.isBlank())throw new IllegalArgumentException("El cliente no tiene un correo configurado.");
         if(body.sendEmail()&&!email.matches("[^\\s@,;<>]+@[^\\s@,;<>]+\\.[^\\s@,;<>]+"))throw new IllegalArgumentException("El correo configurado del cliente no es válido.");
         // generate retorna después del COMMIT de su TransactionTemplate. SMTP nunca pertenece a esa transacción.
-        var generated=service.generate(new DeviceLicensingService.Activation(body.licenseId(),body.expiresAt()),auth.getName());
-        var codes=List.of(generated.get("code").toString());boolean sent=false;
+        var generated=service.generate(new DeviceLicensingService.Activation(body.licenseId(),body.quantity(),body.expiresAt()),auth.getName());
+        @SuppressWarnings("unchecked") var codes=(List<String>)generated.get("codes");boolean sent=false;
         if(body.sendEmail()) {
             sent=mail.sendActivationCodes(email,owner.get("Customer_Name").toString(),owner.get("System_Name").toString(),codes,body.expiresAt(),owner.get("Term_Type").toString(),((Number)owner.get("Seat_Count")).intValue());
             String action=sent?"EMAIL_SENT":"EMAIL_FAILED";
