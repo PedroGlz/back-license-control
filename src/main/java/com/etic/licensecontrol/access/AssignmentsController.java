@@ -9,7 +9,6 @@ import org.springframework.web.bind.annotation.*;
 public class AssignmentsController {
     private final CrudService c;private final AttributeValueService values;
     AssignmentsController(CrudService c,AttributeValueService values){this.c=c;this.values=values;}
-    private static final CrudService.Definition OPTIONS=new CrudService.Definition("system_attribute_options","Id_Option",List.of("Value_Code","Display_Name","Sort_Order"),List.of("Value_Code","Display_Name"));
     private Map<String,Object> key(String user,String system){return Map.of("u",user,"s",system);}
     private void requireAccess(String user,String system){
         if(c.db().queryForObject("SELECT COUNT(*) FROM user_system_access a JOIN users u ON u.Id_User=a.Id_User JOIN systems s ON s.Id_System=a.Id_System WHERE a.Id_User=:u AND a.Id_System=:s AND a.Is_Active=TRUE AND u.Is_Active=TRUE AND s.Is_Active=TRUE",key(user,system),Integer.class)==0)throw new IllegalArgumentException("Asigne primero un sistema activo al usuario");
@@ -49,17 +48,68 @@ public class AssignmentsController {
         for(String permission:selected){p.put("p",permission);c.db().update("INSERT INTO role_permissions(Id_Role,Id_Permission) VALUES(:r,:p) ON DUPLICATE KEY UPDATE Is_Active=TRUE",p);}
         c.audit("role_permissions",roleId,"UPDATE");
     }
-    @GetMapping("/attributes/{attributeId}/options") List<Map<String,Object>> options(@PathVariable String attributeId){return c.db().queryForList("SELECT * FROM system_attribute_options WHERE Id_Attribute=:a AND Is_Active=TRUE ORDER BY Sort_Order",Map.of("a",attributeId)).stream().map(CrudService::formatDates).toList();}
-    @PostMapping("/attributes/{attributeId}/options") @Transactional void option(@PathVariable String attributeId,@RequestBody Map<String,Object>b){
-        b.remove("Status");b.remove("Is_Active");b.putIfAbsent("Sort_Order",0);b.put("Value_Code",CrudService.generatedCode(b.get("Display_Name"),100));
-        new com.etic.licensecontrol.common.InputValidator(c.db()).validate("system_attribute_options",b);
-        Map<String,Object>p=new HashMap<>(b);p.put("id",UUID.randomUUID().toString());p.put("a",attributeId);
-        if(c.db().queryForObject("SELECT COUNT(*) FROM system_attributes WHERE Id_Attribute=:a AND Is_Active=TRUE",p,Integer.class)==0)throw new IllegalArgumentException("Atributo inactivo");
-        c.db().update("INSERT INTO system_attribute_options(Id_Option,Id_Attribute,Value_Code,Display_Name,Sort_Order) VALUES(:id,:a,:Value_Code,:Display_Name,:Sort_Order) ON DUPLICATE KEY UPDATE Is_Active=TRUE,Display_Name=VALUES(Display_Name),Sort_Order=VALUES(Sort_Order)",p);
-        c.audit("system_attribute_options",attributeId,"UPDATE");
+    // Display_Name se conserva como alias del contrato consumido por los selectores de atributos.
+    private static final String OPTION_SELECT="SELECT Id_Option,Id_Attribute,Value_Code,Display_Value AS Display_Name,Sort_Order,Is_Active,Created_At,Updated_At FROM system_attribute_options";
+    @GetMapping("/attributes/{attributeId}/options")
+    List<Map<String,Object>> options(@PathVariable String attributeId,@RequestParam(defaultValue="false") boolean includeInactive){
+        requireAttribute(attributeId,false);
+        return c.db().queryForList(OPTION_SELECT+" WHERE Id_Attribute=:a"+(includeInactive?"":" AND Is_Active=TRUE")+" ORDER BY Sort_Order,Display_Value,Id_Option",Map.of("a",attributeId)).stream().map(CrudService::formatDates).toList();
     }
-    @PutMapping("/attributes/{attributeId}/options/{id}") Map<String,Object> optionUpdate(@PathVariable String attributeId,@PathVariable String id,@RequestBody Map<String,Object> body){if(!attributeId.equals(c.get(OPTIONS,id).get("Id_Attribute")))throw new IllegalArgumentException("Opción inválida");return c.update(OPTIONS,id,body);}
-    @DeleteMapping("/attributes/{attributeId}/options/{id}") void removeOption(@PathVariable String attributeId,@PathVariable String id){if(!attributeId.equals(c.get(OPTIONS,id).get("Id_Attribute")))throw new IllegalArgumentException("Opción inválida");c.deactivate(OPTIONS,id);}
+    @PostMapping("/attributes/{attributeId}/options") @Transactional
+    Map<String,Object> option(@PathVariable String attributeId,@RequestBody Map<String,Object> body){
+        requireAttribute(attributeId,true);
+        var p=optionParams(body,null);p.put("a",attributeId);p.put("id",UUID.randomUUID().toString());
+        requireUniqueOption(p);
+        c.db().update("INSERT INTO system_attribute_options(Id_Option,Id_Attribute,Value_Code,Display_Value,Sort_Order,Is_Active) VALUES(:id,:a,:value,:label,:sort,:active)",p);
+        c.audit("system_attribute_options",p.get("id").toString(),"CREATE");
+        return findOption(attributeId,p.get("id").toString());
+    }
+    @PutMapping("/attributes/{attributeId}/options/{id}") @Transactional
+    Map<String,Object> optionUpdate(@PathVariable String attributeId,@PathVariable String id,@RequestBody Map<String,Object> body){
+        requireAttribute(attributeId,true);
+        var original=findOption(attributeId,id);var p=optionParams(body,original);p.put("a",attributeId);p.put("id",id);
+        requireUniqueOption(p);
+        if(!Objects.equals(original.get("Value_Code"),p.get("value"))){
+            p.put("old",original.get("Value_Code"));
+            if(c.db().queryForObject("SELECT COUNT(*) FROM user_system_attribute_values WHERE Id_Attribute=:a AND (Value_Text=:old OR JSON_CONTAINS(Value_Json,JSON_QUOTE(:old)))",p,Integer.class)>0)
+                throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT,"El valor está asignado a usuarios y no puede cambiarse. Puedes editar su etiqueta.");
+        }
+        c.db().update("UPDATE system_attribute_options SET Value_Code=:value,Display_Value=:label,Sort_Order=:sort,Is_Active=:active WHERE Id_Option=:id AND Id_Attribute=:a",p);
+        c.audit("system_attribute_options",id,"UPDATE");
+        return findOption(attributeId,id);
+    }
+    @DeleteMapping("/attributes/{attributeId}/options/{id}") @Transactional
+    void removeOption(@PathVariable String attributeId,@PathVariable String id){
+        requireAttribute(attributeId,true);findOption(attributeId,id);
+        c.db().update("UPDATE system_attribute_options SET Is_Active=FALSE WHERE Id_Option=:id AND Id_Attribute=:a",Map.of("id",id,"a",attributeId));
+        c.audit("system_attribute_options",id,"DEACTIVATE");
+    }
+    private void requireAttribute(String id,boolean lock){
+        var rows=c.db().queryForList("SELECT Data_Type FROM system_attributes WHERE Id_Attribute=:a AND Is_Active=TRUE"+(lock?" FOR UPDATE":""),Map.of("a",id));
+        if(rows.isEmpty())throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND,"Atributo no encontrado");
+        if(lock&&!Set.of("SELECT","MULTISELECT").contains(rows.getFirst().get("Data_Type")))
+            throw new IllegalArgumentException("Este tipo de atributo no admite opciones");
+    }
+    private Map<String,Object> findOption(String attribute,String id){
+        return c.db().queryForList(OPTION_SELECT+" WHERE Id_Attribute=:a AND Id_Option=:id",Map.of("a",attribute,"id",id)).stream().findFirst().map(CrudService::formatDates)
+            .orElseThrow(()->new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND,"Opción no encontrada"));
+    }
+    private void requireUniqueOption(Map<String,Object> p){
+        if(c.db().queryForObject("SELECT COUNT(*) FROM system_attribute_options WHERE Id_Attribute=:a AND Value_Code=:value AND Id_Option<>:id",p,Integer.class)>0)
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT,"Ya existe este valor en el atributo. Edita o reactiva la opción existente.");
+    }
+    private Map<String,Object> optionParams(Map<String,Object> body,Map<String,Object> original){
+        var merged=new HashMap<String,Object>();if(original!=null)merged.putAll(original);merged.putAll(body);
+        Object raw=merged.get("Value_Code");if(!(raw instanceof String value)||value.isBlank()||value.length()>100)throw new IllegalArgumentException("El valor es obligatorio y admite hasta 100 caracteres");
+        Object label=merged.get("Display_Name");if(label!=null&&!(label instanceof String))throw new IllegalArgumentException("Etiqueta inválida");
+        String text=label==null||label.toString().isBlank()?value.trim():label.toString().trim();
+        if(text.length()>150)throw new IllegalArgumentException("La etiqueta admite hasta 150 caracteres");
+        int sort;
+        try{sort=new java.math.BigDecimal(Objects.toString(merged.getOrDefault("Sort_Order",0))).intValueExact();if(sort<0)throw new ArithmeticException();}
+        catch(Exception ex){throw new IllegalArgumentException("El orden debe ser un entero mayor o igual a cero");}
+        Object active=merged.getOrDefault("Is_Active",true);if(!(active instanceof Boolean))throw new IllegalArgumentException("Estado inválido");
+        return new HashMap<>(Map.of("value",value.trim(),"label",text,"sort",sort,"active",active));
+    }
     @GetMapping("/users/{userId}/systems/{systemId}/attributes") List<Map<String,Object>> values(@PathVariable String userId,@PathVariable String systemId){requireAccess(userId,systemId);return c.db().queryForList("SELECT a.*,v.Id_User_Attribute_Value,v.Value_Text,v.Value_Integer,v.Value_Decimal,v.Value_Boolean,v.Value_Date,v.Value_Datetime,v.Value_Json FROM system_attributes a LEFT JOIN user_system_attribute_values v ON v.Id_Attribute=a.Id_Attribute AND v.Id_User=:u AND v.Id_System=:s WHERE a.Id_System=:s AND a.Is_Active=TRUE ORDER BY a.Sort_Order",key(userId,systemId)).stream().map(CrudService::formatDates).toList();}
     @PutMapping("/users/{userId}/systems/{systemId}/attributes/{attributeId}") void value(@PathVariable String userId,@PathVariable String systemId,@PathVariable String attributeId,@RequestBody Map<String,Object>b){values.save(userId,systemId,attributeId,b);}
 }
