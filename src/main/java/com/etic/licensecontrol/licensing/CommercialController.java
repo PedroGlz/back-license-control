@@ -17,11 +17,16 @@ public class CommercialController {
     @GetMapping("/licenses/{id}") Map<String,Object> detail(@PathVariable String id) { return service.detail(id); }
     @PostMapping("/licenses") Map<String,Object> create(@RequestBody Map<String,Object> body,Authentication auth) { return service.create(body,auth.getName()); }
     @PostMapping("/licenses/{id}/status") void status(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { service.status(id,body.getOrDefault("status",""),auth.getName()); }
+    @PostMapping("/licenses/{id}/renew") Map<String,Object> renew(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { return service.renew(id,body.get("requestId"),auth.getName()); }
     @PostMapping("/licenses/{id}/devices") void link(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { service.linkUserDevice(id,body.get("deviceId"),auth.getName()); }
+    @PostMapping("/devices/{id}/status") void deviceStatus(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { service.deviceStatus(id,body.getOrDefault("status",""),auth.getName()); }
     @PostMapping("/devices/{id}/retire") void retire(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { service.retireDevice(id,body.getOrDefault("reason",""),auth.getName()); }
     @GetMapping("/customers") List<Map<String,Object>> customers() { return crud.db().queryForList("SELECT Id_Customer,Name,Contact_Name,Email,Phone,Is_Active FROM customers ORDER BY Name",Map.of()); }
     @PostMapping("/customers") @Transactional Map<String,Object> createCustomer(@RequestBody Map<String,Object> body) { return saveCustomer(UUID.randomUUID().toString(),body,true); }
     @PutMapping("/customers/{id}") @Transactional Map<String,Object> updateCustomer(@PathVariable String id,@RequestBody Map<String,Object> body) { return saveCustomer(id,body,false); }
+    @GetMapping("/customers/{id}/users") List<Map<String,Object>> customerUsers(@PathVariable String id) { return service.customerUsers(id); }
+    @PostMapping("/customers/{id}/users") void associateUser(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { service.associateUser(id,body.get("userId"),auth.getName()); }
+    @DeleteMapping("/customers/{id}/users/{userId}") void removeUser(@PathVariable String id,@PathVariable String userId,Authentication auth) { service.removeUser(id,userId,auth.getName()); }
     private Map<String,Object> saveCustomer(String id,Map<String,Object> body,boolean create) {
         String name=Objects.toString(body.get("Name"),"").trim();if(name.isEmpty())throw new IllegalArgumentException("El nombre del cliente es obligatorio");
         body.keySet().retainAll(Set.of("Name","Contact_Name","Email","Phone","Is_Active"));body.put("Name",name);body.putIfAbsent("Is_Active",true);validator.validate("customers",body);

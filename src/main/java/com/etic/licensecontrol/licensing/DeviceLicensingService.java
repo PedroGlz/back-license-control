@@ -26,7 +26,7 @@ public class DeviceLicensingService {
     public record Activation(String licenseId,Integer quantity,Instant expiresAt) {}
 
     public List<Map<String,Object>> codes() {
-        var rows=db.queryForList("SELECT e.Id_Enrollment,e.Id_License,e.Id_Device,d.Display_Name,c.Name Customer_Name,s.Name System_Name,l.Status License_Status,l.Expires_At License_Expires_At,e.Expires_At,e.Used_At,e.Created_At FROM device_enrollment_codes e JOIN licenses l ON l.Id_License=e.Id_License JOIN customers c ON c.Id_Customer=l.Id_Customer JOIN systems s ON s.Id_System=l.Id_System LEFT JOIN licensed_devices d ON d.Id_Device=e.Id_Device ORDER BY e.Created_At DESC LIMIT 100",Map.of());
+        var rows=db.queryForList("SELECT e.Id_Enrollment,e.Id_License,e.Id_Device,d.Display_Name,COALESCE(c.Name,TRIM(CONCAT_WS(' ',u.First_Name,u.Last_Name,u.Second_Last_Name)),u.Username) Customer_Name,s.Name System_Name,l.Status License_Status,l.Expires_At License_Expires_At,e.Expires_At,e.Used_At,e.Created_At FROM device_enrollment_codes e JOIN licenses l ON l.Id_License=e.Id_License LEFT JOIN customers c ON c.Id_Customer=l.Id_Customer LEFT JOIN users u ON u.Id_User=l.Id_User JOIN systems s ON s.Id_System=l.Id_System LEFT JOIN licensed_devices d ON d.Id_Device=e.Id_Device ORDER BY e.Created_At DESC LIMIT 100",Map.of());
         rows.forEach(row->row.replaceAll((key,value)->value instanceof Timestamp t?t.toLocalDateTime().toString()+"Z":value instanceof LocalDateTime time?time.toString()+"Z":value));
         return rows;
     }
@@ -132,6 +132,7 @@ public class DeviceLicensingService {
         var rows=db.queryForList("SELECT ld.Status Link_Status,d.Is_Active Device_Active,d.Status Device_Status,d.Public_Key,d.Fingerprint FROM license_devices ld JOIN licensed_devices d ON d.Id_Device=ld.Id_Device WHERE ld.Id_License=:id AND ld.Id_Device=:device FOR UPDATE",Map.of("id",id,"device",device));
         if(rows.isEmpty())throw denied("DEVICE_REVOKED","Dispositivo no vinculado");
         var relation=rows.getFirst();
+        if("SUSPENDED".equals(relation.get("Device_Status"))||"SUSPENDED".equals(relation.get("Link_Status")))throw denied("DEVICE_SUSPENDED","Dispositivo suspendido");
         if(!enabled(relation.get("Device_Active"))||!"ACTIVE".equals(relation.get("Device_Status"))||!"ACTIVE".equals(relation.get("Link_Status")))throw denied("DEVICE_REVOKED","Dispositivo no autorizado");
         license.putAll(relation);return license;
     }

@@ -16,7 +16,7 @@ public class LicenseService {
     private final CrudService crud;
     public LicenseService(CrudService crud) { this.crud=crud;this.db=crud.db(); }
     public List<Map<String,Object>> list() {
-        var rows=db.queryForList("SELECT l.*,c.Name Customer_Name,c.Email Customer_Email,u.Username User_Name,s.Name System_Name,(SELECT COUNT(*) FROM license_devices ld WHERE ld.Id_License=l.Id_License AND ld.Status IN ('ACTIVE','SUSPENDED')) Used_Seats FROM licenses l LEFT JOIN customers c ON c.Id_Customer=l.Id_Customer LEFT JOIN users u ON u.Id_User=l.Id_User JOIN systems s ON s.Id_System=l.Id_System WHERE l.Is_Active=TRUE ORDER BY l.Created_At DESC",Map.of());
+        var rows=db.queryForList("SELECT l.*,c.Name Customer_Name,COALESCE(c.Email,u.Email) Customer_Email,u.Username User_Name,s.Name System_Name,(SELECT COUNT(*) FROM license_devices ld WHERE ld.Id_License=l.Id_License AND ld.Status IN ('ACTIVE','SUSPENDED')) Used_Seats FROM licenses l LEFT JOIN customers c ON c.Id_Customer=l.Id_Customer LEFT JOIN users u ON u.Id_User=l.Id_User JOIN systems s ON s.Id_System=l.Id_System WHERE l.Is_Active=TRUE ORDER BY l.Created_At DESC",Map.of());
         rows.forEach(this::format);return rows;
     }
     public Map<String,Object> detail(String id) {
@@ -31,8 +31,10 @@ public class LicenseService {
         var configs=db.queryForList("SELECT sl.Licensing_Mode FROM systems s JOIN system_licensing sl ON sl.Id_System=s.Id_System WHERE s.Id_System=:system AND s.Is_Active=TRUE AND s.Status='ACTIVE' AND s.System_Type='ANDROID' AND sl.Is_Active=TRUE FOR UPDATE",p);
         if(configs.size()!=1)throw new IllegalArgumentException("Selecciona un sistema Android con licenciamiento activo");
         String mode=configs.getFirst().get("Licensing_Mode").toString();
-        String customer=optional(body,"Id_Customer"),user=null;
-        if("DEVICE_ONLY".equals(mode))customer=required(body,"Id_Customer");
+        String customer=optional(body,"Id_Customer"),user=optional(body,"Id_User");
+        if("DEVICE_ONLY".equals(mode)){
+            if((customer==null)==(user==null))throw new IllegalArgumentException("Selecciona exactamente un titular: cliente o usuario");
+        }
         else if("USER_DEVICE".equals(mode))user=required(body,"Id_User");
         else throw new IllegalArgumentException("Modalidad inválida");
         p.addValue("customer",customer).addValue("user",user).addValue("mode",mode);
@@ -53,6 +55,19 @@ public class LicenseService {
         if("REVOKED".equals(target))
             db.update("UPDATE license_devices SET Status='REVOKED',Revoked_At=UTC_TIMESTAMP(6) WHERE Id_License=:id AND Status IN ('ACTIVE','SUSPENDED')",Map.of("id",id));
         crud.audit("licenses",id,target);
+    }
+    @Transactional public Map<String,Object> renew(String id,String requestId,String actor) {
+        try{if(requestId==null||!UUID.fromString(requestId).toString().equals(requestId))throw new Exception();}catch(Exception ex){throw new IllegalArgumentException("La solicitud de renovación no es válida");}
+        var license=lock(id);
+        if("REVOKED".equals(license.get("Status")))throw new IllegalArgumentException("Una licencia revocada no puede renovarse");
+        if("PERPETUAL".equals(license.get("Term_Type")))throw new IllegalArgumentException("Una licencia permanente no requiere renovación");
+        if(requestId.equals(license.get("Last_Renewal_Request_Id")))return detail(id);
+        LocalDateTime now=LocalDateTime.now(ZoneOffset.UTC);Object current=license.get("Expires_At");
+        LocalDateTime base=current instanceof Timestamp t?t.toLocalDateTime():(LocalDateTime)current;
+        if(base==null||base.isBefore(now))base=now;
+        LocalDateTime next=switch(license.get("Term_Type").toString()){case "MONTHLY"->base.plusMonths(1);case "ANNUAL"->base.plusYears(1);default->throw new IllegalArgumentException("Vigencia no renovable");};
+        db.update("UPDATE licenses SET Expires_At=:expires,Last_Renewal_Request_Id=:request,Modified_At=UTC_TIMESTAMP(6),Modified_By=:actor WHERE Id_License=:id",Map.of("expires",next,"request",requestId,"actor",actor,"id",id));
+        crud.audit("licenses",id,"RENEW");return detail(id);
     }
     public Map<String,Object> lock(String id) {
         if(id==null||id.isBlank())throw denied("LICENSE_NOT_FOUND","Selecciona una licencia");
@@ -90,6 +105,30 @@ public class LicenseService {
         db.update("UPDATE license_devices SET Status=:reason,Revoked_At=UTC_TIMESTAMP(6) WHERE Id_Device=:device AND Status IN ('ACTIVE','SUSPENDED')",p);
         db.update("UPDATE licensed_devices SET Status=:reason,Modified_At=UTC_TIMESTAMP(6) WHERE Id_Device=:device",p);
         crud.audit("licensed_devices",device,reason);
+    }
+    @Transactional public void deviceStatus(String device,String target,String actor) {
+        if(!Set.of("ACTIVE","SUSPENDED").contains(target))throw new IllegalArgumentException("Estado de dispositivo no permitido");
+        var rows=db.queryForList("SELECT Status,Is_Active FROM licensed_devices WHERE Id_Device=:device FOR UPDATE",Map.of("device",device));
+        if(rows.isEmpty())throw new IllegalArgumentException("Dispositivo no encontrado");
+        var row=rows.getFirst();String current=Objects.toString(row.get("Status"),"");
+        if(!enabled(row.get("Is_Active"))||Set.of("REVOKED","LOST","REPLACED").contains(current))throw new IllegalArgumentException("El estado terminal del dispositivo no puede revertirse");
+        if(current.equals(target))return;
+        if("SUSPENDED".equals(target)&&!"ACTIVE".equals(current)||"ACTIVE".equals(target)&&!"SUSPENDED".equals(current))throw new IllegalArgumentException("Cambio de estado no permitido");
+        db.update("UPDATE licensed_devices SET Status=:status,Modified_At=UTC_TIMESTAMP(6) WHERE Id_Device=:device",Map.of("status",target,"device",device));
+        db.update("UPDATE license_devices SET Status=:status WHERE Id_Device=:device AND Status=:previous",Map.of("status",target,"previous",current,"device",device));
+        crud.audit("licensed_devices",device,target); 
+    }
+    public List<Map<String,Object>> customerUsers(String customer) {
+        return db.queryForList("SELECT u.Id_User,u.Username,u.First_Name,u.Last_Name,u.Second_Last_Name,u.Email FROM customer_users cu JOIN users u ON u.Id_User=cu.Id_User WHERE cu.Id_Customer=:customer AND cu.Is_Active=TRUE AND u.Is_Active=TRUE ORDER BY u.First_Name,u.Last_Name,u.Username",Map.of("customer",customer));
+    }
+    @Transactional public void associateUser(String customer,String user,String actor) {
+        if(customer==null||user==null||db.queryForObject("SELECT COUNT(*) FROM customers c CROSS JOIN users u WHERE c.Id_Customer=:customer AND u.Id_User=:user AND c.Is_Active=TRUE AND u.Is_Active=TRUE",Map.of("customer",customer,"user",user),Integer.class)!=1)throw new IllegalArgumentException("Selecciona un cliente y usuario activos");
+        db.update("INSERT INTO customer_users(Id_Customer,Id_User) VALUES(:customer,:user) ON DUPLICATE KEY UPDATE Is_Active=TRUE",Map.of("customer",customer,"user",user));
+        crud.audit("customer_users",customer,"ASSOCIATE_USER");
+    }
+    @Transactional public void removeUser(String customer,String user,String actor) {
+        if(db.update("UPDATE customer_users SET Is_Active=FALSE WHERE Id_Customer=:customer AND Id_User=:user",Map.of("customer",customer,"user",user))==0)throw new IllegalArgumentException("La asociación no existe");
+        crud.audit("customer_users",customer,"REMOVE_USER");
     }
     public Map<String,Object> dashboard() {
         return Map.of("activeCustomers",db.queryForObject("SELECT COUNT(*) FROM customers WHERE Is_Active=TRUE",Map.of(),Long.class),
