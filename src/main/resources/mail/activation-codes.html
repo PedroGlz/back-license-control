@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Tu código de activación está listo</title>
+</head>
+<body style="margin:0;padding:0;background:#eef2f7;color:#172033;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#eef2f7;">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #dbe3ee;">
+          <tr>
+            <td align="center" style="background:#0b4f9c;padding:24px;">
+              <img src="cid:eticLogo" width="144" alt="ETIC" style="display:block;width:144px;max-width:100%;height:auto;background:#ffffff;border-radius:8px;padding:8px;">
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:32px 28px;">
+              <h1 style="margin:0 0 18px;color:#123a69;font-size:26px;line-height:1.25;text-align:center;">Tu código de activación está listo</h1>
+              <p style="margin:0 0 16px;font-size:16px;line-height:1.6;">{{GREETING}},</p>
+              <p style="margin:0 0 20px;font-size:16px;line-height:1.6;">Estos son tus códigos de activación para <strong>{{SYSTEM}}</strong>:</p>
+              <div style="margin:20px 0;text-align:center;">{{CODES}}</div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:22px 0;background:#f5f8fc;border-radius:8px;">
+                <tr><td style="padding:16px;font-size:15px;line-height:1.6;"><strong>Vencimiento:</strong> {{EXPIRES}}<br><strong>Vigencia:</strong> {{TERM}}<br><strong>Dispositivos contratados:</strong> {{SEATS}}</td></tr>
+              </table>
+              <h2 style="margin:24px 0 12px;color:#123a69;font-size:19px;">Cómo activar la aplicación</h2>
+              <ol style="margin:0 0 18px;padding-left:22px;font-size:15px;line-height:1.8;">
+                <li>Ingresa a ETIC Suite.</li>
+                <li>Descarga e instala la aplicación en tu dispositivo Android.</li>
+                <li>Abre la aplicación e introduce el código de activación.</li>
+                <li>Completa la activación con conexión a Internet.</li>
+              </ol>
+              <p style="margin:0 0 24px;font-size:14px;line-height:1.6;color:#46566b;">Después de activar la aplicación podrás utilizarla sin conexión durante el periodo autorizado.</p>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                <tr><td align="center" style="padding:4px 0 18px;"><a href="{{SUITE_URL}}" style="display:inline-block;background:#0b64c0;color:#ffffff;text-decoration:none;font-weight:bold;font-size:16px;padding:13px 24px;border-radius:7px;">Acceder a ETIC Suite</a></td></tr>
+              </table>
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#5f6f82;word-break:break-all;">Si el botón no funciona, abre:<br><a href="{{SUITE_URL}}" style="color:#0b64c0;">{{SUITE_URL}}</a></p>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="background:#123a69;color:#ffffff;padding:18px;font-size:12px;line-height:1.5;">ETIC · License Control<br>Correo transaccional de activación</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
