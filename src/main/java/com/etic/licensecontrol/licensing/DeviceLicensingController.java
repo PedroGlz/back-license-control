@@ -10,6 +10,7 @@ public class DeviceLicensingController {
     private final DeviceLicensingService service;
     private final MailService mail;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate db;
+    private final Set<String> generationsInProgress=java.util.concurrent.ConcurrentHashMap.newKeySet();
     public DeviceLicensingController(DeviceLicensingService service,MailService mail,org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate db) { this.service=service;this.mail=mail;this.db=db; }
     public record GenerateRequest(String licenseId,Integer quantity,java.time.Instant expiresAt,boolean sendEmail) {}
     @PostMapping("/api/mobile/device/enroll")
@@ -23,11 +24,16 @@ public class DeviceLicensingController {
     @PostMapping("/api/admin/enrollment-codes")
     ResponseEntity<?> generate(@RequestBody GenerateRequest body,Authentication auth) {
         if(body.licenseId()==null)throw new IllegalArgumentException("Selecciona una licencia");
+        if(!generationsInProgress.add(body.licenseId()))throw new org.springframework.web.server.ResponseStatusException(HttpStatus.CONFLICT,"Ya hay una generación de códigos en curso para esta licencia.");
+        try { return generateOnce(body,auth); }
+        finally { generationsInProgress.remove(body.licenseId()); }
+    }
+    private ResponseEntity<?> generateOnce(GenerateRequest body,Authentication auth) {
         var owners=db.queryForList("SELECT c.Id_Customer,COALESCE(c.Name,TRIM(CONCAT_WS(' ',u.First_Name,u.Last_Name,u.Second_Last_Name)),u.Username) Customer_Name,COALESCE(c.Email,u.Email) Email,s.Name System_Name,e.Term_Type,e.Seat_Count FROM licenses e LEFT JOIN customers c ON c.Id_Customer=e.Id_Customer LEFT JOIN users u ON u.Id_User=e.Id_User JOIN systems s ON s.Id_System=e.Id_System WHERE e.Id_License=:id AND e.Licensing_Mode='DEVICE_ONLY'",Map.of("id",body.licenseId()));
         if(owners.isEmpty())throw new IllegalArgumentException("Licencia no encontrada");
         var owner=owners.getFirst();String email=Objects.toString(owner.get("Email"),"").trim();
-        if(body.sendEmail()&&email.isBlank())throw new IllegalArgumentException("El cliente no tiene un correo configurado.");
-        if(body.sendEmail()&&!email.matches("[^\\s@,;<>]+@[^\\s@,;<>]+\\.[^\\s@,;<>]+"))throw new IllegalArgumentException("El correo configurado del cliente no es válido.");
+        if(body.sendEmail()&&email.isBlank())throw new IllegalArgumentException("El titular de la licencia no tiene un correo configurado.");
+        if(body.sendEmail()&&!email.matches("[^\\s@,;<>]+@[^\\s@,;<>]+\\.[^\\s@,;<>]+"))throw new IllegalArgumentException("El correo configurado del titular no es válido.");
         // generate retorna después del COMMIT de su TransactionTemplate. SMTP nunca pertenece a esa transacción.
         var generated=service.generate(new DeviceLicensingService.Activation(body.licenseId(),body.quantity(),body.expiresAt()),auth.getName());
         @SuppressWarnings("unchecked") var codes=(List<String>)generated.get("codes");boolean sent=false;
