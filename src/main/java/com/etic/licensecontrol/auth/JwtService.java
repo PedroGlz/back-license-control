@@ -22,9 +22,14 @@ public class JwtService {
         long now=Instant.now().getEpochSecond();var claims=new java.util.LinkedHashMap<String,Object>();
         claims.put("sub",profile.get("id"));claims.put("username",profile.get("username"));claims.put("system",profile.get("system"));
         for(String key:java.util.List.of("roles","permissions","systemAdmin","firstName","lastName","email"))claims.put(key,profile.get(key));
+        claims.put("ver",profile.get("authVersion"));
         claims.put("iat",now);claims.put("exp",now+expiration);
         return sign(part("{\"alg\":\"HS256\",\"typ\":\"JWT\"}")+"."+part(json.writeValueAsString(claims)));
     }
+    String createPasswordChange(java.util.Map<String,Object> profile){long now=Instant.now().getEpochSecond();var claims=new java.util.LinkedHashMap<String,Object>();claims.put("sub",profile.get("id"));claims.put("system",profile.get("system"));claims.put("purpose","PASSWORD_CHANGE");claims.put("ver",profile.get("authVersion"));claims.put("iat",now);claims.put("exp",now+600);return sign(part("{\"alg\":\"HS256\",\"typ\":\"JWT\"}")+"."+part(json.writeValueAsString(claims)));}
+    String purpose(String token){return claim(token,"purpose","ACCESS");}
+    int authVersion(String token){try{return Integer.parseInt(claim(token,"ver","-1"));}catch(Exception e){return -1;}}
+    private String claim(String token,String name,String fallback){if(subject(token)==null)return fallback;try{return json.readTree(Base64.getUrlDecoder().decode(token.split("\\.")[1])).path(name).asText(fallback);}catch(Exception e){return fallback;}}
     String system(String token){if(subject(token)==null)return null;try{return json.readTree(Base64.getUrlDecoder().decode(token.split("\\.")[1])).path("system").asText("LICENSE_CONTROL");}catch(Exception e){return null;}}
     String subject(String token) { try { String[] parts=token.split("\\.");if(parts.length!=3||!constant(parts[2],signature(parts[0]+"."+parts[1])))return null;var header=json.readTree(Base64.getUrlDecoder().decode(parts[0]));if(!"HS256".equals(header.path("alg").asText()))return null;var claims=json.readTree(Base64.getUrlDecoder().decode(parts[1]));String sub=claims.path("sub").asText();return !sub.isBlank()&&claims.path("exp").asLong()>Instant.now().getEpochSecond()?sub:null;}catch(Exception e){return null;} }
     private String part(String value){return Base64.getUrlEncoder().withoutPadding().encodeToString(value.getBytes(StandardCharsets.UTF_8));}

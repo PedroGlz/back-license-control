@@ -29,7 +29,7 @@ public class DeviceLicensingController {
         finally { generationsInProgress.remove(body.licenseId()); }
     }
     private ResponseEntity<?> generateOnce(GenerateRequest body,Authentication auth) {
-        var owners=db.queryForList("SELECT c.Id_Customer,COALESCE(c.Name,TRIM(CONCAT_WS(' ',u.First_Name,u.Last_Name,u.Second_Last_Name)),u.Username) Customer_Name,COALESCE(c.Email,u.Email) Email,s.Name System_Name,e.Term_Type,e.Seat_Count FROM licenses e LEFT JOIN customers c ON c.Id_Customer=e.Id_Customer LEFT JOIN users u ON u.Id_User=e.Id_User JOIN systems s ON s.Id_System=e.Id_System WHERE e.Id_License=:id AND e.Licensing_Mode='DEVICE_ONLY'",Map.of("id",body.licenseId()));
+        var owners=db.queryForList("SELECT e.Id_System,c.Id_Customer,COALESCE(c.Name,TRIM(CONCAT_WS(' ',u.First_Name,u.Last_Name,u.Second_Last_Name)),u.Username) Customer_Name,COALESCE(c.Email,u.Email) Email,s.Name System_Name,e.Term_Type,e.Seat_Count FROM licenses e LEFT JOIN customers c ON c.Id_Customer=e.Id_Customer LEFT JOIN users u ON u.Id_User=e.Id_User JOIN systems s ON s.Id_System=e.Id_System WHERE e.Id_License=:id AND e.Licensing_Mode='DEVICE_ONLY'",Map.of("id",body.licenseId()));
         if(owners.isEmpty())throw new IllegalArgumentException("Licencia no encontrada");
         var owner=owners.getFirst();String email=Objects.toString(owner.get("Email"),"").trim();
         if(body.sendEmail()&&email.isBlank())throw new IllegalArgumentException("El titular de la licencia no tiene un correo configurado.");
@@ -38,7 +38,7 @@ public class DeviceLicensingController {
         var generated=service.generate(new DeviceLicensingService.Activation(body.licenseId(),body.quantity(),body.expiresAt()),auth.getName());
         @SuppressWarnings("unchecked") var codes=(List<String>)generated.get("codes");boolean sent=false;
         if(body.sendEmail()) {
-            sent=mail.sendActivationCodes(email,owner.get("Customer_Name").toString(),owner.get("System_Name").toString(),codes,body.expiresAt(),owner.get("Term_Type").toString(),((Number)owner.get("Seat_Count")).intValue());
+            sent=mail.sendActivationCodes(email,owner.get("Customer_Name").toString(),owner.get("Id_System").toString(),owner.get("System_Name").toString(),codes,body.expiresAt(),owner.get("Term_Type").toString(),((Number)owner.get("Seat_Count")).intValue());
             String action=sent?"EMAIL_SENT":"EMAIL_FAILED";
             var metadata=Map.of("owner",owner.get("Customer_Name"),"license",body.licenseId(),"quantity",codes.size(),"email",email);
             try {

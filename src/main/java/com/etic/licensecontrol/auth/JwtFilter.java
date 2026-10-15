@@ -18,9 +18,12 @@ public class JwtFilter extends OncePerRequestFilter {
     JwtFilter(JwtService jwt, AuthRepository users,@org.springframework.beans.factory.annotation.Qualifier("handlerExceptionResolver") org.springframework.web.servlet.HandlerExceptionResolver errors){this.jwt=jwt;this.users=users;this.errors=errors;}
     protected void doFilterInternal(HttpServletRequest req,HttpServletResponse res,FilterChain chain)throws ServletException,IOException{
         try {
-        String h=req.getHeader("Authorization"); String id=h!=null&&h.startsWith("Bearer ")?jwt.subject(h.substring(7)):null;
-        String system=id==null?null:jwt.system(h.substring(7));
-        if(id!=null&&system!=null&&users.isAuthorized(id,system)){
+        String h=req.getHeader("Authorization");String token=h!=null&&h.startsWith("Bearer ")?h.substring(7):null;String id=token==null?null:jwt.subject(token);
+        String system=id==null?null:jwt.system(token);String purpose=id==null?null:jwt.purpose(token);
+        int tokenVersion=id==null?-1:jwt.authVersion(token),currentVersion=id==null?-2:users.authVersion(id);
+        boolean versionValid=tokenVersion<0?currentVersion==0:tokenVersion==currentVersion;
+        boolean routeAllowed=!"PASSWORD_CHANGE".equals(purpose)||"/api/auth/required-password".equals(req.getRequestURI());
+        if(id!=null&&system!=null&&versionValid&&routeAllowed&&users.isAuthorized(id,system)){
             var authentication=new UsernamePasswordAuthenticationToken(id,null,List.of());
             authentication.setDetails(system);
             SecurityContextHolder.getContext().setAuthentication(authentication);
