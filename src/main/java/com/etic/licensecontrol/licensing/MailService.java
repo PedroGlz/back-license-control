@@ -80,7 +80,8 @@ public class MailService {
             String body = RESET_ADMIN_TEMPLATE.getContentAsString(StandardCharsets.UTF_8)
                     .replace("{{USERNAME}}", html(username)).replace("{{EMAIL}}", html(email))
                     .replace("{{SYSTEM}}", html(system)).replace("{{DATE}}", html(localDate(requestedAt)));
-            return sendHtml(recipients.toArray(String[]::new), "Solicitud de restablecimiento de contraseña", body);
+            var copies = configuration.recoveryCopies(recipients);
+            return sendHtml(recipients.toArray(String[]::new), copies.cc().toArray(String[]::new), copies.bcc().toArray(String[]::new), "Solicitud de restablecimiento de contraseña", body);
         } catch (Exception ex) {
             log.error("Falló la notificación de recuperación a Super Administradores. Tipo={}", ex.getClass().getName(), ex);
             return false;
@@ -93,19 +94,19 @@ public class MailService {
             String body = TEMPORARY_PASSWORD_TEMPLATE.getContentAsString(StandardCharsets.UTF_8)
                     .replace("{{GREETING}}", html(greeting)).replace("{{PASSWORD}}", html(temporaryPassword))
                     .replace("{{EXPIRES}}", html(localDate(expiresAt)));
-            return sendHtml(new String[]{recipient}, "Tu contraseña temporal de acceso", body);
+            return sendHtml(new String[]{recipient}, new String[0], new String[0], "Tu contraseña temporal de acceso", body);
         } catch (Exception ex) {
             log.error("Falló el envío de contraseña temporal. Tipo={}", ex.getClass().getName(), ex);
             return false;
         }
     }
 
-    private boolean sendHtml(String[] recipients, String subject, String body) throws Exception {
+    private boolean sendHtml(String[] recipients, String[] cc, String[] bcc, String subject, String body) throws Exception {
         var mail = sender.getIfAvailable();
         if (mail == null || host.isBlank() || from.isBlank()) return false;
         var message = mail.createMimeMessage();
         var helper = new MimeMessageHelper(message, true, StandardCharsets.UTF_8.name());
-        helper.setFrom(from); helper.setTo(recipients); helper.setSubject(subject); helper.setText(body, true);
+        helper.setFrom(from); helper.setTo(recipients); if (cc.length > 0) helper.setCc(cc); if (bcc.length > 0) helper.setBcc(bcc); helper.setSubject(subject); helper.setText(body, true);
         helper.addInline("eticLogo", LOGO, "image/png");
         mail.send(message); return true;
     }

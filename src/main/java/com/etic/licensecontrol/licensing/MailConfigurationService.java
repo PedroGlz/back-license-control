@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class MailConfigurationService {
     public record Delivery(List<String> cc, List<String> bcc, Guide guide) {}
+    public record RecipientCopies(List<String> cc, List<String> bcc) {}
     public record Guide(String originalName, Path path) {}
 
     private final NamedParameterJdbcTemplate db;
@@ -38,6 +39,18 @@ public class MailConfigurationService {
         db.update("UPDATE activation_email_settings SET Cc_Emails=:cc,Bcc_Emails=:bcc,Updated_By=:actor WHERE Id_Setting=1",
                 Map.of("cc", String.join(",", cc), "bcc", String.join(",", bcc), "actor", actor));
         return Map.of("cc", List.copyOf(cc), "bcc", List.copyOf(bcc));
+    }
+
+    public RecipientCopies recoveryCopies(Collection<String> primaryRecipients) {
+        var setting = db.queryForMap("SELECT Cc_Emails,Bcc_Emails FROM activation_email_settings WHERE Id_Setting=1", Map.of());
+        var cc = new LinkedHashSet<>(split(setting.get("Cc_Emails")));
+        var bcc = new LinkedHashSet<>(split(setting.get("Bcc_Emails")));
+        var primary = new HashSet<String>();
+        for (String recipient : primaryRecipients) primary.add(Objects.toString(recipient, "").trim().toLowerCase(Locale.ROOT));
+        cc.removeAll(primary);
+        bcc.removeAll(primary);
+        bcc.removeAll(cc);
+        return new RecipientCopies(List.copyOf(cc), List.copyOf(bcc));
     }
 
     public Delivery delivery(String systemId, String primaryRecipient) {
