@@ -18,6 +18,7 @@ public class CommercialController {
     @PostMapping("/licenses") Map<String,Object> create(@RequestBody Map<String,Object> body,Authentication auth) { return service.create(body,auth.getName()); }
     @PostMapping("/licenses/{id}/status") void status(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { service.status(id,body.getOrDefault("status",""),auth.getName()); }
     @PostMapping("/licenses/{id}/renew") Map<String,Object> renew(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { return service.renew(id,body.get("requestId"),auth.getName()); }
+    @PutMapping("/licenses/{id}/term") Map<String,Object> term(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { return service.changeTerm(id,body.get("termType"),auth.getName()); }
     @PostMapping("/licenses/{id}/devices") void link(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { service.linkUserDevice(id,body.get("deviceId"),auth.getName()); }
     @PostMapping("/devices/{id}/status") void deviceStatus(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { service.deviceStatus(id,body.getOrDefault("status",""),auth.getName()); }
     @PostMapping("/devices/{id}/retire") void retire(@PathVariable String id,@RequestBody Map<String,String> body,Authentication auth) { service.retireDevice(id,body.getOrDefault("reason",""),auth.getName()); }

@@ -69,6 +69,31 @@ public class LicenseService {
         db.update("UPDATE licenses SET Expires_At=:expires,Last_Renewal_Request_Id=:request,Modified_At=UTC_TIMESTAMP(6),Modified_By=:actor WHERE Id_License=:id",Map.of("expires",next,"request",requestId,"actor",actor,"id",id));
         crud.audit("licenses",id,"RENEW");return detail(id);
     }
+    @Transactional public Map<String,Object> changeTerm(String id,String target,String actor) {
+        if(!Set.of("MONTHLY","ANNUAL","PERPETUAL").contains(target))throw new IllegalArgumentException("Selecciona una vigencia válida");
+        var license=lock(id);String previous=Objects.toString(license.get("Term_Type"),"");
+        if(!enabled(license.get("Is_Active")))throw new IllegalArgumentException("La licencia no está activa");
+        if("REVOKED".equals(license.get("Status")))throw new IllegalArgumentException("Una licencia revocada no puede cambiar de vigencia");
+        if(previous.equals(target))throw new IllegalArgumentException("La licencia ya tiene la vigencia seleccionada");
+        LocalDateTime effective=LocalDateTime.now(ZoneOffset.UTC);
+        LocalDateTime expires=switch(target){case "MONTHLY"->effective.plusMonths(1);case "ANNUAL"->effective.plusMonths(12);default->null;};
+        var params=new MapSqlParameterSource().addValue("id",id).addValue("term",target).addValue("expires",expires).addValue("actor",actor);
+        int changed=db.update("UPDATE licenses SET Term_Type=:term,Expires_At=:expires,Modified_At=UTC_TIMESTAMP(6),Modified_By=:actor WHERE Id_License=:id AND Term_Type<>:term",params);
+        if(changed!=1)throw new ResponseStatusException(HttpStatus.CONFLICT,"La licencia cambió durante la operación. Actualiza la pantalla e inténtalo nuevamente.");
+        auditTermChange(id,actor,previous,target,license.get("Expires_At"),expires,effective);
+        return detail(id);
+    }
+
+    private void auditTermChange(String id,String actor,String previous,String target,Object previousExpires,LocalDateTime expires,LocalDateTime effective) {
+        try {
+            String oldValue=tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(Map.of("termType",previous,"expiresAt",Objects.toString(previousExpires,"")));
+            Map<String,Object> next=new LinkedHashMap<>();next.put("termType",target);next.put("effectiveAt",effective.toString()+"Z");next.put("expiresAt",expires==null?null:expires.toString()+"Z");
+            String newValue=tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(next);
+            db.update("INSERT INTO audit_events(Id_Audit_Event,Id_User,Id_System,Action,Entity_Type,Entity_Id,Old_Value,New_Value) SELECT :event,:actor,Id_System,'TERM_CHANGED','licenses',:license,:oldValue,:newValue FROM systems WHERE Code='LICENSE_CONTROL'",Map.of("event",UUID.randomUUID().toString(),"actor",actor,"license",id,"oldValue",oldValue,"newValue",newValue));
+        } catch(Exception ex) {
+            throw new IllegalStateException("No fue posible registrar la auditoría del cambio de vigencia",ex);
+        }
+    }
     public Map<String,Object> lock(String id) {
         if(id==null||id.isBlank())throw denied("LICENSE_NOT_FOUND","Selecciona una licencia");
         var rows=db.queryForList("SELECT l.*,s.Code,s.System_Type,s.Is_Active System_Active,s.Status System_Status,sl.Package_Name,sl.Offline_Validity_Days,sl.Is_Active Licensing_Active,sl.Licensing_Mode Configured_Mode FROM licenses l JOIN systems s ON s.Id_System=l.Id_System JOIN system_licensing sl ON sl.Id_System=l.Id_System WHERE l.Id_License=:id FOR UPDATE",Map.of("id",id));

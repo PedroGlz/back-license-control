@@ -6,6 +6,9 @@ import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.namedparam.*;
 import org.springframework.security.core.Authentication;
@@ -20,43 +23,76 @@ import org.slf4j.LoggerFactory;
 @Service
 public class PasswordRecoveryService {
     private static final Logger log = LoggerFactory.getLogger(PasswordRecoveryService.class);
-    private static final String GENERIC = "Si los datos corresponden a una cuenta registrada, recibirás una contraseña temporal en el correo configurado.";
-    private static final Duration REQUEST_WINDOW = Duration.ofMinutes(15);
+    private static final String GENERIC = "La solicitud fue aceptada para procesamiento. Si los datos corresponden a una cuenta registrada, recibirás una contraseña temporal en el correo configurado.";
+    private static final String FAILED = "No fue posible completar la solicitud. Intenta nuevamente más tarde o contacta a soporte.";
     private static final SecureRandom RANDOM = new SecureRandom();
-    private final NamedParameterJdbcTemplate db; private final PasswordEncoder encoder; private final MailService mail; private final TransactionTemplate tx;
-    private final ConcurrentMap<String,Instant> requestLimits = new ConcurrentHashMap<>();
+    private final NamedParameterJdbcTemplate db; private final PasswordEncoder encoder; private final MailService mail; private final PasswordRecoveryOutboxService outbox; private final TransactionTemplate tx;
+    private final Duration cooldown; private final Duration temporaryValidity; private final Duration deliveryWindow; private final byte[] rateLimitKey;
     private final ConcurrentMap<String,DeliverySecret> deliveries = new ConcurrentHashMap<>();
     private record DeliverySecret(String userId,String requestId,String adminId,String password,String email,String name,Instant expires,AtomicBoolean sending) {}
+    private record AutomaticResult(long retryAfterSeconds) {}
 
-    PasswordRecoveryService(NamedParameterJdbcTemplate db,PasswordEncoder encoder,MailService mail,PlatformTransactionManager manager){this.db=db;this.encoder=encoder;this.mail=mail;this.tx=new TransactionTemplate(manager);}
+    PasswordRecoveryService(NamedParameterJdbcTemplate db,PasswordEncoder encoder,MailService mail,PasswordRecoveryOutboxService outbox,PlatformTransactionManager manager,
+            @Value("${license-control.password-recovery.cooldown-seconds:900}") long cooldownSeconds,
+            @Value("${license-control.password-recovery.temporary-validity-seconds:1800}") long temporaryValiditySeconds,
+            @Value("${license-control.password-recovery.delivery-window-seconds:900}") long deliveryWindowSeconds,
+            @Value("${license-control.password-recovery.outbox-key:}") String configuredKey){this.db=db;this.encoder=encoder;this.mail=mail;this.outbox=outbox;this.tx=new TransactionTemplate(manager);this.cooldown=Duration.ofSeconds(Math.max(60,cooldownSeconds));this.deliveryWindow=Duration.ofSeconds(Math.max(60,deliveryWindowSeconds));this.temporaryValidity=Duration.ofSeconds(Math.max(60,temporaryValiditySeconds));if(!this.temporaryValidity.minus(this.deliveryWindow).isPositive())throw new IllegalStateException("La vigencia temporal debe ser mayor que la ventana de entrega");this.rateLimitKey=configuredKey==null||configuredKey.length()<32?null:configuredKey.getBytes(java.nio.charset.StandardCharsets.UTF_8);}
 
     public Map<String,Object> request(String identifier,String system){
         String key=Objects.toString(identifier,"").trim().toLowerCase(Locale.ROOT), source=Objects.toString(system,"ETIC_SUITE").trim().toUpperCase(Locale.ROOT);
-        if(key.isBlank()||key.length()>254)return Map.of("message",GENERIC);
-        if(!Set.of("ETIC_SUITE","ETIC_ONLINE","LICENSE_CONTROL").contains(source))return Map.of("message",GENERIC);
-        Instant now=Instant.now(),allowed=requestLimits.get(key);if(allowed!=null&&allowed.isAfter(now))return Map.of("message",GENERIC);requestLimits.put(key,now.plus(REQUEST_WINDOW));
+        if(key.isBlank()||key.length()>254){log.info("Solicitud de recuperación no procesable. Motivo=IDENTIFIER_INVALID");return response("ACCEPTED",GENERIC,0);}
+        if(!Set.of("ETIC_SUITE","ETIC_ONLINE","LICENSE_CONTROL").contains(source)){log.info("Solicitud de recuperación no procesable. Motivo=SYSTEM_INVALID");return response("ACCEPTED",GENERIC,0);}
+        Instant now=Instant.now();
         expirePending();
-        try { automaticReset(key,source,now); }
-        catch (Exception ex) { log.error("No fue posible completar la recuperación automática. Sistema={}, tipo={}",source,ex.getClass().getSimpleName());queueForSupport(key,source,now); }
-        return Map.of("message",GENERIC);
+        try {
+            AutomaticResult result=automaticReset(key,source,now);
+            if(result.retryAfterSeconds()>0){log.info("Solicitud de recuperación contenida por cooldown. Sistema={}, segundosRestantes={}",source,result.retryAfterSeconds());return response("ACCEPTED",GENERIC,0);}
+            return response("ACCEPTED",GENERIC,0);
+        }
+        catch (Exception ex) {
+            log.error("No fue posible completar la recuperación automática. Sistema={}, tipo={}",source,ex.getClass().getSimpleName());
+            return response("PROCESSING_FAILED",FAILED,60);
+        }
     }
 
-    private void automaticReset(String key,String source,Instant requestedAt){
-        tx.executeWithoutResult(status->{
-            var users=db.queryForList("SELECT u.Id_User,u.Username,u.First_Name,u.Last_Name,u.Email FROM users u WHERE u.Is_Active=TRUE AND u.Status='ACTIVE' AND (LOWER(u.Username)=:key OR LOWER(u.Email)=:key) AND EXISTS (SELECT 1 FROM user_system_access a JOIN systems s ON s.Id_System=a.Id_System WHERE a.Id_User=u.Id_User AND a.Is_Active=TRUE AND a.Status='ACTIVE' AND s.Code=:system AND s.Is_Active=TRUE AND s.Status='ACTIVE') LIMIT 1 FOR UPDATE",Map.of("key",key,"system",source));
-            if(users.isEmpty())return;
+    private AutomaticResult automaticReset(String key,String source,Instant requestedAt){
+        return tx.execute(status->{
+            var users=db.queryForList("SELECT u.Id_User,u.Username,u.First_Name,u.Last_Name,u.Email,u.Password_Hash,u.Must_Change_Password,u.Temporary_Password_Expires_At,u.Auth_Version FROM users u WHERE u.Is_Active=TRUE AND u.Status='ACTIVE' AND (LOWER(u.Username)=:key OR LOWER(u.Email)=:key) LIMIT 1 FOR UPDATE",Map.of("key",key));
+            String principal=users.isEmpty()?"IDENTIFIER:"+key:"USER:"+users.getFirst().get("Id_User");
+            String rateKey=cooldownKey(principal);
+            db.update("INSERT INTO password_recovery_rate_limits(Rate_Key,Next_Allowed_At) VALUES(:key,UTC_TIMESTAMP(6)) ON DUPLICATE KEY UPDATE Rate_Key=VALUES(Rate_Key)",Map.of("key",rateKey));
+            Long remaining=db.queryForObject("SELECT GREATEST(0,TIMESTAMPDIFF(SECOND,UTC_TIMESTAMP(6),Next_Allowed_At)) FROM password_recovery_rate_limits WHERE Rate_Key=:key FOR UPDATE",Map.of("key",rateKey),Long.class);
+            if(remaining!=null&&remaining>0)return new AutomaticResult(remaining);
+            db.update("UPDATE password_recovery_rate_limits SET Next_Allowed_At=:next WHERE Rate_Key=:key",Map.of("next",LocalDateTime.ofInstant(Instant.now().plus(cooldown),ZoneOffset.UTC),"key",rateKey));
+            if(users.isEmpty()){log.info("Solicitud de recuperación aceptada sin emisión. Sistema={}, motivo=ACCOUNT_NOT_ELIGIBLE",source);return new AutomaticResult(0);}
             var user=users.getFirst();String id=user.get("Id_User").toString(),email=Objects.toString(user.get("Email"),"").trim();
-            if(!validEmail(email))throw new IllegalStateException("EMAIL_UNAVAILABLE");
-            Integer recent=db.queryForObject("SELECT COUNT(*) FROM password_reset_requests WHERE Id_User=:user AND Status='COMPLETED' AND Requested_At>DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 15 MINUTE)",Map.of("user",id),Integer.class);
-            if(recent!=null&&recent>0)return;
-            String password=temporaryPassword(),request=UUID.randomUUID().toString();Instant expires=requestedAt.plus(REQUEST_WINDOW);
+            Integer access=db.queryForObject("SELECT COUNT(*) FROM user_system_access a JOIN systems s ON s.Id_System=a.Id_System WHERE a.Id_User=:user AND a.Is_Active=TRUE AND a.Status='ACTIVE' AND s.Code=:system AND s.Is_Active=TRUE AND s.Status='ACTIVE'",Map.of("user",id,"system",source),Integer.class);
+            if(access==null||access==0){log.info("Solicitud de recuperación aceptada sin emisión. Sistema={}, motivo=SYSTEM_ACCESS_NOT_ELIGIBLE",source);return new AutomaticResult(0);}
+            if(!validEmail(email)){log.info("Solicitud de recuperación aceptada sin emisión. Sistema={}, motivo=EMAIL_NOT_ELIGIBLE",source);return new AutomaticResult(0);}
+            outbox.prepareReplacement(id);
+            user=db.queryForMap("SELECT Id_User,Username,First_Name,Last_Name,Email,Password_Hash,Must_Change_Password,Temporary_Password_Expires_At,Auth_Version FROM users WHERE Id_User=:user",Map.of("user",id));
+            String password=temporaryPassword(),request=UUID.randomUUID().toString(),outboxId=UUID.randomUUID().toString(),issuedHash=encoder.encode(password);Instant credentialExpires=requestedAt.plus(temporaryValidity),deliveryExpires=requestedAt.plus(deliveryWindow);
             db.update("UPDATE password_reset_requests SET Status='EXPIRED' WHERE Id_User=:user AND Status='PENDING'",Map.of("user",id));
-            db.update("UPDATE users SET Password_Hash=:hash,Must_Change_Password=TRUE,Temporary_Password_Expires_At=:expires,Auth_Version=Auth_Version+1,Password_Changed_At=UTC_TIMESTAMP(6) WHERE Id_User=:id",Map.of("hash",encoder.encode(password),"expires",LocalDateTime.ofInstant(expires,ZoneOffset.UTC),"id",id));
+            db.update("UPDATE users SET Password_Hash=:hash,Must_Change_Password=TRUE,Temporary_Password_Expires_At=:expires,Auth_Version=Auth_Version+1,Password_Changed_At=UTC_TIMESTAMP(6) WHERE Id_User=:id",Map.of("hash",issuedHash,"expires",LocalDateTime.ofInstant(credentialExpires,ZoneOffset.UTC),"id",id));
             String name=(Objects.toString(user.get("First_Name"),"")+" "+Objects.toString(user.get("Last_Name"),"")).trim();
-            if(!mail.sendTemporaryPassword(email,name,password,expires,source))throw new IllegalStateException("SMTP_DELIVERY_FAILED");
-            db.update("INSERT INTO password_reset_requests(Id_Request,Id_User,Requested_System,Created_At,Expires_At,Requested_At,Status,Reset_At,Completed_At,Notified_At,Completed_By) VALUES(:request,:user,:system,UTC_TIMESTAMP(6),:expires,UTC_TIMESTAMP(6),'COMPLETED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),:user)",Map.of("request",request,"user",id,"system",source,"expires",LocalDateTime.ofInstant(expires,ZoneOffset.UTC)));
+            db.update("INSERT INTO password_reset_requests(Id_Request,Id_User,Requested_System,Created_At,Expires_At,Requested_At,Status,Reset_At,Completed_At,Completed_By) VALUES(:request,:user,:system,UTC_TIMESTAMP(6),:expires,UTC_TIMESTAMP(6),'COMPLETED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),:user)",Map.of("request",request,"user",id,"system",source,"expires",LocalDateTime.ofInstant(credentialExpires,ZoneOffset.UTC)));
+            int issuedVersion=((Number)user.get("Auth_Version")).intValue()+1;
+            Object previousMustChange=user.get("Must_Change_Password");
+            boolean wasTemporary=Boolean.TRUE.equals(previousMustChange)||(previousMustChange instanceof Number number&&number.intValue()!=0);
+            outbox.enqueue(outboxId,request,id,source,email,name,password,deliveryExpires,credentialExpires,Objects.toString(user.get("Password_Hash"),null),wasTemporary,user.get("Temporary_Password_Expires_At"),issuedVersion,issuedHash);
             audit(id,id,"AUTOMATIC_PASSWORD_RESET");
+            return new AutomaticResult(0);
         });
+    }
+
+    private static Map<String,Object> response(String status,String message,long retryAfterSeconds){
+        return Map.of("status",status,"message",message,"retryAfterSeconds",Math.max(0,retryAfterSeconds));
+    }
+
+    private String cooldownKey(String principal){
+        if(rateLimitKey==null)throw new IllegalStateException("PASSWORD_RECOVERY_KEY_UNAVAILABLE");
+        try{Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(rateLimitKey,"HmacSHA256"));return HexFormat.of().formatHex(mac.doFinal(principal.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
+        catch(GeneralSecurityException ex){throw new IllegalStateException("PASSWORD_RECOVERY_RATE_KEY_FAILED",ex);}
     }
 
     private void queueForSupport(String key,String source,Instant requestedAt){
@@ -77,7 +113,7 @@ public class PasswordRecoveryService {
     public Map<String,Object> reset(String userId,String requestId,Authentication auth){requireSuperAdmin(auth);if(requestId==null||requestId.isBlank())throw new ResponseStatusException(HttpStatus.CONFLICT,"Se requiere una solicitud pendiente y vigente.");String admin=auth.getName();String password=temporaryPassword();
         var result=tx.execute(status->{var users=db.queryForList("SELECT Id_User,Username,First_Name,Last_Name,Email FROM users WHERE Id_User=:id AND Is_Active=TRUE FOR UPDATE",Map.of("id",userId));if(users.isEmpty())throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Usuario no encontrado.");var user=users.getFirst();
             var requests=db.queryForList("SELECT Id_Request,Expires_At FROM password_reset_requests WHERE Id_Request=:request AND Id_User=:user AND Status='PENDING' AND Reset_At IS NULL AND Expires_At>UTC_TIMESTAMP(6) FOR UPDATE",Map.of("request",requestId,"user",userId));if(requests.isEmpty()){expirePending();throw new ResponseStatusException(HttpStatus.GONE,"La solicitud expiró o ya fue atendida. El usuario debe crear una nueva solicitud.");}
-            Instant expires=instant(requests.getFirst().get("Expires_At"));
+            Instant expires=instant(requests.getFirst().get("Expires_At"));outbox.prepareReplacement(userId);
             db.update("UPDATE users SET Password_Hash=:hash,Must_Change_Password=TRUE,Temporary_Password_Expires_At=(SELECT Expires_At FROM password_reset_requests WHERE Id_Request=:request),Auth_Version=Auth_Version+1,Password_Changed_At=UTC_TIMESTAMP(6) WHERE Id_User=:id",Map.of("hash",encoder.encode(password),"request",requestId,"id",userId));
             db.update("UPDATE password_reset_requests SET Reset_At=UTC_TIMESTAMP(6),Completed_By=:admin WHERE Id_Request=:request",Map.of("admin",admin,"request",requestId));user.put("Temporary_Expires",expires);
             audit(admin,userId,"PASSWORD_RESET");return user;});
