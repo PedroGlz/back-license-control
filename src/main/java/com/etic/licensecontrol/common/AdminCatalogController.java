@@ -50,7 +50,11 @@ public class AdminCatalogController {
     private void deviceRelations(List<Map<String,Object>> rows){
         if(rows.isEmpty())return;
         var ids=rows.stream().map(r->r.get("Id_Device")).toList();
-        var relations=crud.db().queryForList("SELECT ld.Id_Device,GROUP_CONCAT(DISTINCT s.Name SEPARATOR ', ') AS Associated_Licenses FROM license_devices ld JOIN licenses l ON l.Id_License=ld.Id_License JOIN systems s ON s.Id_System=l.Id_System WHERE ld.Id_Device IN (:ids) GROUP BY ld.Id_Device",Map.of("ids",ids));
+        var relations=crud.db().queryForList("SELECT ld.Id_Device,"+
+            "GROUP_CONCAT(DISTINCT CASE WHEN ld.Status IN ('ACTIVE','SUSPENDED') THEN COALESCE(c.Name,NULLIF(TRIM(CONCAT_WS(' ',u.First_Name,u.Last_Name,u.Second_Last_Name)),''),u.Username) END SEPARATOR ', ') Current_Owners,"+
+            "GROUP_CONCAT(DISTINCT CASE WHEN ld.Status IN ('ACTIVE','SUSPENDED') THEN CONCAT(s.Name,' · ',LEFT(l.Id_License,8)) END SEPARATOR ', ') Current_Associations,"+
+            "GROUP_CONCAT(DISTINCT CASE WHEN ld.Status NOT IN ('ACTIVE','SUSPENDED') THEN CONCAT(COALESCE(c.Name,NULLIF(TRIM(CONCAT_WS(' ',u.First_Name,u.Last_Name,u.Second_Last_Name)),''),u.Username,'Sin propietario'),' · ',s.Name,' · ',ld.Status) END SEPARATOR ', ') Historical_Associations " +
+            "FROM license_devices ld JOIN licenses l ON l.Id_License=ld.Id_License JOIN systems s ON s.Id_System=l.Id_System LEFT JOIN customers c ON c.Id_Customer=l.Id_Customer LEFT JOIN users u ON u.Id_User=l.Id_User WHERE ld.Id_Device IN (:ids) GROUP BY ld.Id_Device",Map.of("ids",ids));
         for(var row:rows){row.remove("Public_Key");row.remove("Fingerprint");for(var relation:relations)if(Objects.equals(row.get("Id_Device"),relation.get("Id_Device")))row.putAll(relation);}
     }
     private void defaults(String r,Map<String,Object>b,boolean create){if("systems".equals(r))b.keySet().retainAll(DEFS.get(r).writable());}

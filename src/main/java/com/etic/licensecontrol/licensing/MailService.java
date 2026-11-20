@@ -89,11 +89,18 @@ public class MailService {
     }
 
     public boolean sendTemporaryPassword(String recipient, String name, String temporaryPassword, Instant expiresAt) {
+        return sendTemporaryPassword(recipient, name, temporaryPassword, expiresAt, "ETIC_SUITE");
+    }
+
+    public boolean sendTemporaryPassword(String recipient, String name, String temporaryPassword, Instant expiresAt, String system) {
         try {
             String greeting = name == null || name.isBlank() ? "Hola" : "Hola " + name.trim();
+            String application = switch (system) { case "ETIC_ONLINE" -> "ETIC Online"; case "LICENSE_CONTROL" -> "Central Manager"; default -> "ETIC Suite"; };
+            String applicationUrl = switch (system) { case "ETIC_ONLINE" -> "https://etic-system.online/"; case "LICENSE_CONTROL" -> "https://license-control.etic-system.online/"; default -> SUITE_URL; };
             String body = TEMPORARY_PASSWORD_TEMPLATE.getContentAsString(StandardCharsets.UTF_8)
                     .replace("{{GREETING}}", html(greeting)).replace("{{PASSWORD}}", html(temporaryPassword))
-                    .replace("{{EXPIRES}}", html(localDate(expiresAt)));
+                    .replace("{{EXPIRES}}", html(localDate(expiresAt))).replace("{{APP_NAME}}",html(application))
+                    .replace("{{APP_URL}}",html(applicationUrl));
             return sendHtml(new String[]{recipient}, new String[0], new String[0], "Tu contraseña temporal de acceso", body);
         } catch (Exception ex) {
             log.error("Falló el envío de contraseña temporal. Tipo={}", ex.getClass().getName(), ex);

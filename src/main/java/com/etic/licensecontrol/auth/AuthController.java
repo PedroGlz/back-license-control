@@ -17,18 +17,22 @@ public class AuthController {
     record PasswordChange(@NotBlank String currentPassword,@NotBlank String newPassword){}
     private final AuthRepository repo;private final PasswordEncoder encoder;private final JwtService jwt;
     AuthController(AuthRepository repo,PasswordEncoder encoder,JwtService jwt){this.repo=repo;this.encoder=encoder;this.jwt=jwt;}
-    @PostMapping("/login") @Transactional(noRollbackFor=ResponseStatusException.class) Map<String,Object> login(@Valid @RequestBody Login body){return authenticate(body.username(),body.password(),"LICENSE_CONTROL");}
-    @PostMapping("/system-login") @Transactional(noRollbackFor=ResponseStatusException.class) Map<String,Object> systemLogin(@Valid @RequestBody SystemLogin body){return authenticate(body.username(),body.password(),body.system());}
+    @PostMapping("/login") @Transactional(noRollbackFor={ResponseStatusException.class,LoginDeniedException.class}) Map<String,Object> login(@Valid @RequestBody Login body){return authenticate(body.username(),body.password(),"LICENSE_CONTROL");}
+    @PostMapping("/system-login") @Transactional(noRollbackFor={ResponseStatusException.class,LoginDeniedException.class}) Map<String,Object> systemLogin(@Valid @RequestBody SystemLogin body){return authenticate(body.username(),body.password(),body.system());}
     private Map<String,Object> authenticate(String username,String password,String system){
         var user=repo.loginUser(username).orElse(null);
         HttpStatus denied=null;String reason=null;
-        if(user==null||!encoder.matches(password,(String)user.get("Password_Hash"))){denied=HttpStatus.UNAUTHORIZED;reason="Usuario o contraseña incorrectos.";}
-        else if(!Boolean.TRUE.equals(user.get("Is_Active"))){denied=HttpStatus.FORBIDDEN;reason="El usuario está inactivo.";}
-        else if("LOCKED".equals(user.get("Status"))){denied=HttpStatus.FORBIDDEN;reason="El usuario está bloqueado.";}
-        else if("SUSPENDED".equals(user.get("Status"))){denied=HttpStatus.FORBIDDEN;reason="El usuario está suspendido.";}
-        else if(Boolean.TRUE.equals(user.get("Must_Change_Password"))&&!repo.temporaryPasswordValid((String)user.get("Id_User"))){denied=HttpStatus.UNAUTHORIZED;reason="La contraseña temporal expiró. Solicita un nuevo restablecimiento.";}
-        else if(!repo.isAuthorized((String)user.get("Id_User"),system)){denied=HttpStatus.FORBIDDEN;reason="El usuario no tiene acceso a este sistema.";}
-        if(denied!=null){repo.loginEvent(user==null?Map.of("Username",username):user,false,"INVALID_CREDENTIALS_OR_ACCESS",system);throw new ResponseStatusException(denied,reason);}
+        String code=null;String verifiedId=null;
+        if(user==null||!encoder.matches(password,(String)user.get("Password_Hash"))){denied=HttpStatus.UNAUTHORIZED;code="INVALID_CREDENTIALS";reason="Usuario o contraseña incorrectos.";}
+        else {
+            verifiedId=(String)user.get("Id_User");
+            if(!Boolean.TRUE.equals(user.get("Is_Active"))){denied=HttpStatus.FORBIDDEN;code="USER_INACTIVE";reason="El usuario está inactivo.";}
+            else if("LOCKED".equals(user.get("Status"))){denied=HttpStatus.FORBIDDEN;code="USER_LOCKED";reason="El usuario está bloqueado.";}
+            else if("SUSPENDED".equals(user.get("Status"))){denied=HttpStatus.FORBIDDEN;code="USER_SUSPENDED";reason="El usuario está suspendido.";}
+            else if(Boolean.TRUE.equals(user.get("Must_Change_Password"))&&!repo.temporaryPasswordValid(verifiedId)){denied=HttpStatus.UNAUTHORIZED;code="TEMPORARY_PASSWORD_EXPIRED";reason="La contraseña temporal expiró. Solicita un nuevo restablecimiento.";}
+            else if(!repo.isAuthorized(verifiedId,system)){denied=HttpStatus.FORBIDDEN;code="SYSTEM_ACCESS_DENIED";reason="El usuario no tiene acceso a este sistema.";}
+        }
+        if(denied!=null){repo.loginEvent(user==null?Map.of("Username",username):user,false,code,system);throw new LoginDeniedException(denied,code,reason,denied==HttpStatus.FORBIDDEN?verifiedId:null,denied==HttpStatus.FORBIDDEN?system:null);}
         var profile=repo.profile((String)user.get("Id_User"),system);
         String previous=(String)user.get("Password_Hash");
         if(encoder.upgradeEncoding(previous)&&!repo.upgradePasswordHash((String)user.get("Id_User"),previous,encoder.encode(password))) {

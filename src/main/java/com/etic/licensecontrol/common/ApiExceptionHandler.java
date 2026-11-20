@@ -27,6 +27,7 @@ public class ApiExceptionHandler {
         else if(sqlCode==1451||sqlCode==1452){status=sqlCode==1451?HttpStatus.CONFLICT:HttpStatus.BAD_REQUEST;message="Existe una relación inválida o el registro está siendo utilizado.";}
         else if(diskFull(ex)){status=HttpStatus.INSUFFICIENT_STORAGE;message="No hay espacio suficiente para almacenar el archivo.";}
         else if(storageDenied(ex)){status=HttpStatus.SERVICE_UNAVAILABLE;message="No fue posible escribir el archivo en el almacenamiento del servidor.";}
+        else if(ex instanceof com.etic.licensecontrol.auth.LoginDeniedException denied){status=denied.status();message=safeMessage(denied.getMessage(),message);}
         else if(ex instanceof ResponseStatusException r){status=HttpStatus.valueOf(r.getStatusCode().value());message=status==HttpStatus.SERVICE_UNAVAILABLE&&storageFailure(ex)?"No fue posible escribir el archivo en el almacenamiento del servidor.":safeMessage(r.getReason(),message);}
         else if(ex instanceof org.springframework.security.core.AuthenticationException){status=HttpStatus.UNAUTHORIZED;message="Sesión inválida o expirada.";}
         else if(ex instanceof org.springframework.security.access.AccessDeniedException){status=HttpStatus.FORBIDDEN;message="El usuario no tiene permiso para realizar esta operación.";}
@@ -58,7 +59,12 @@ public class ApiExceptionHandler {
         else if(ex instanceof IllegalArgumentException){status=HttpStatus.BAD_REQUEST;message=safeMessage(ex.getMessage(),"Los datos enviados no son válidos.");if(message.matches("(?is).*(ya existe|ya está (asignad|registrad)).*"))status=HttpStatus.CONFLICT;}
         if(status.is5xxServerError()||sql!=null||ex instanceof DataIntegrityViolationException||ex.getCause()!=null)
             log.error("Error en {} {}",req.getMethod(),req.getRequestURI(),sanitized(ex,0));
-        return ResponseEntity.status(status).body(body(status,message,req));
+        Map<String,Object> response=body(status,message,req);
+        if(ex instanceof com.etic.licensecontrol.auth.LoginDeniedException denied){
+            response.put("code",denied.code());
+            if(denied.userId()!=null){response.put("system",denied.system());response.put("user",Map.of("id",denied.userId()));}
+        }
+        return ResponseEntity.status(status).body(response);
     }
     private static java.sql.SQLException findSqlException(Throwable error){
         java.sql.SQLException first=null;

@@ -14,10 +14,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 public class PasswordRecoveryService {
-    private static final String GENERIC = "Si los datos corresponden a una cuenta registrada, tu solicitud será revisada por soporte.";
+    private static final Logger log = LoggerFactory.getLogger(PasswordRecoveryService.class);
+    private static final String GENERIC = "Si los datos corresponden a una cuenta registrada, recibirás una contraseña temporal en el correo configurado.";
     private static final Duration REQUEST_WINDOW = Duration.ofMinutes(15);
     private static final SecureRandom RANDOM = new SecureRandom();
     private final NamedParameterJdbcTemplate db; private final PasswordEncoder encoder; private final MailService mail; private final TransactionTemplate tx;
@@ -30,18 +33,43 @@ public class PasswordRecoveryService {
     public Map<String,Object> request(String identifier,String system){
         String key=Objects.toString(identifier,"").trim().toLowerCase(Locale.ROOT), source=Objects.toString(system,"ETIC_SUITE").trim().toUpperCase(Locale.ROOT);
         if(key.isBlank()||key.length()>254)return Map.of("message",GENERIC);
+        if(!Set.of("ETIC_SUITE","ETIC_ONLINE","LICENSE_CONTROL").contains(source))return Map.of("message",GENERIC);
         Instant now=Instant.now(),allowed=requestLimits.get(key);if(allowed!=null&&allowed.isAfter(now))return Map.of("message",GENERIC);requestLimits.put(key,now.plus(REQUEST_WINDOW));
         expirePending();
-        var users=db.queryForList("SELECT DISTINCT u.Id_User,u.Username,u.Email FROM users u JOIN user_system_access a ON a.Id_User=u.Id_User AND a.Is_Active=TRUE AND a.Status='ACTIVE' JOIN systems s ON s.Id_System=a.Id_System AND s.Code=:system AND s.Is_Active=TRUE AND s.Status='ACTIVE' WHERE u.Is_Active=TRUE AND u.Status='ACTIVE' AND (LOWER(u.Username)=:key OR LOWER(u.Email)=:key) LIMIT 1",Map.of("key",key,"system",source));
-        if(users.isEmpty())return Map.of("message",GENERIC);
-        var user=users.getFirst();String id=user.get("Id_User").toString();
-        Integer pending=db.queryForObject("SELECT COUNT(*) FROM password_reset_requests WHERE Id_User=:user AND Status='PENDING'",Map.of("user",id),Integer.class);
-        if(pending!=null&&pending>0)return Map.of("message",GENERIC);
-        String request=UUID.randomUUID().toString();
-        db.update("INSERT INTO password_reset_requests(Id_Request,Id_User,Requested_System,Created_At,Expires_At,Requested_At,Status) VALUES(:id,:user,:system,UTC_TIMESTAMP(6),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 15 MINUTE),UTC_TIMESTAMP(6),'PENDING')",Map.of("id",request,"user",id,"system",source));
-        var admins=db.queryForList("SELECT DISTINCT u.Email FROM users u JOIN user_system_access a ON a.Id_User=u.Id_User AND a.Is_Active=TRUE AND a.Status='ACTIVE' JOIN systems s ON s.Id_System=a.Id_System AND s.Code='LICENSE_CONTROL' AND s.Is_Active=TRUE JOIN user_system_roles ur ON ur.Id_User=u.Id_User AND ur.Id_System=s.Id_System AND ur.Is_Active=TRUE JOIN roles r ON r.Id_Role=ur.Id_Role AND r.Id_System=s.Id_System AND r.Code='SUPER_ADMIN' AND r.Is_Active=TRUE WHERE u.Is_Active=TRUE AND u.Status='ACTIVE' AND u.Email IS NOT NULL",Map.of(),String.class);
-        mail.notifyPasswordResetAdmins(admins,Objects.toString(user.get("Username"),""),Objects.toString(user.get("Email"),""),source,now);
+        try { automaticReset(key,source,now); }
+        catch (Exception ex) { log.error("No fue posible completar la recuperación automática. Sistema={}, tipo={}",source,ex.getClass().getSimpleName());queueForSupport(key,source,now); }
         return Map.of("message",GENERIC);
+    }
+
+    private void automaticReset(String key,String source,Instant requestedAt){
+        tx.executeWithoutResult(status->{
+            var users=db.queryForList("SELECT u.Id_User,u.Username,u.First_Name,u.Last_Name,u.Email FROM users u WHERE u.Is_Active=TRUE AND u.Status='ACTIVE' AND (LOWER(u.Username)=:key OR LOWER(u.Email)=:key) AND EXISTS (SELECT 1 FROM user_system_access a JOIN systems s ON s.Id_System=a.Id_System WHERE a.Id_User=u.Id_User AND a.Is_Active=TRUE AND a.Status='ACTIVE' AND s.Code=:system AND s.Is_Active=TRUE AND s.Status='ACTIVE') LIMIT 1 FOR UPDATE",Map.of("key",key,"system",source));
+            if(users.isEmpty())return;
+            var user=users.getFirst();String id=user.get("Id_User").toString(),email=Objects.toString(user.get("Email"),"").trim();
+            if(!validEmail(email))throw new IllegalStateException("EMAIL_UNAVAILABLE");
+            Integer recent=db.queryForObject("SELECT COUNT(*) FROM password_reset_requests WHERE Id_User=:user AND Status='COMPLETED' AND Requested_At>DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 15 MINUTE)",Map.of("user",id),Integer.class);
+            if(recent!=null&&recent>0)return;
+            String password=temporaryPassword(),request=UUID.randomUUID().toString();Instant expires=requestedAt.plus(REQUEST_WINDOW);
+            db.update("UPDATE password_reset_requests SET Status='EXPIRED' WHERE Id_User=:user AND Status='PENDING'",Map.of("user",id));
+            db.update("UPDATE users SET Password_Hash=:hash,Must_Change_Password=TRUE,Temporary_Password_Expires_At=:expires,Auth_Version=Auth_Version+1,Password_Changed_At=UTC_TIMESTAMP(6) WHERE Id_User=:id",Map.of("hash",encoder.encode(password),"expires",LocalDateTime.ofInstant(expires,ZoneOffset.UTC),"id",id));
+            String name=(Objects.toString(user.get("First_Name"),"")+" "+Objects.toString(user.get("Last_Name"),"")).trim();
+            if(!mail.sendTemporaryPassword(email,name,password,expires,source))throw new IllegalStateException("SMTP_DELIVERY_FAILED");
+            db.update("INSERT INTO password_reset_requests(Id_Request,Id_User,Requested_System,Created_At,Expires_At,Requested_At,Status,Reset_At,Completed_At,Notified_At,Completed_By) VALUES(:request,:user,:system,UTC_TIMESTAMP(6),:expires,UTC_TIMESTAMP(6),'COMPLETED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),:user)",Map.of("request",request,"user",id,"system",source,"expires",LocalDateTime.ofInstant(expires,ZoneOffset.UTC)));
+            audit(id,id,"AUTOMATIC_PASSWORD_RESET");
+        });
+    }
+
+    private void queueForSupport(String key,String source,Instant requestedAt){
+        try {
+            var users=db.queryForList("SELECT DISTINCT u.Id_User,u.Username,u.Email FROM users u JOIN user_system_access a ON a.Id_User=u.Id_User AND a.Is_Active=TRUE AND a.Status='ACTIVE' JOIN systems s ON s.Id_System=a.Id_System AND s.Code=:system AND s.Is_Active=TRUE AND s.Status='ACTIVE' WHERE u.Is_Active=TRUE AND u.Status='ACTIVE' AND (LOWER(u.Username)=:key OR LOWER(u.Email)=:key) LIMIT 1",Map.of("key",key,"system",source));
+            if(users.isEmpty())return;
+            var user=users.getFirst();String id=user.get("Id_User").toString();
+            Integer pending=db.queryForObject("SELECT COUNT(*) FROM password_reset_requests WHERE Id_User=:user AND Status='PENDING'",Map.of("user",id),Integer.class);
+            if(pending!=null&&pending>0)return;
+            db.update("INSERT INTO password_reset_requests(Id_Request,Id_User,Requested_System,Created_At,Expires_At,Requested_At,Status) VALUES(:id,:user,:system,UTC_TIMESTAMP(6),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 15 MINUTE),UTC_TIMESTAMP(6),'PENDING')",Map.of("id",UUID.randomUUID().toString(),"user",id,"system",source));
+            var admins=db.queryForList("SELECT DISTINCT u.Email FROM users u JOIN user_system_access a ON a.Id_User=u.Id_User AND a.Is_Active=TRUE AND a.Status='ACTIVE' JOIN systems s ON s.Id_System=a.Id_System AND s.Code='LICENSE_CONTROL' AND s.Is_Active=TRUE JOIN user_system_roles ur ON ur.Id_User=u.Id_User AND ur.Id_System=s.Id_System AND ur.Is_Active=TRUE JOIN roles r ON r.Id_Role=ur.Id_Role AND r.Id_System=s.Id_System AND r.Code='SUPER_ADMIN' AND r.Is_Active=TRUE WHERE u.Is_Active=TRUE AND u.Status='ACTIVE' AND u.Email IS NOT NULL",Map.of(),String.class);
+            mail.notifyPasswordResetAdmins(admins,Objects.toString(user.get("Username"),""),Objects.toString(user.get("Email"),""),source,requestedAt);
+        } catch(Exception supportError){log.error("No fue posible registrar la recuperación para soporte. Sistema={}, tipo={}",source,supportError.getClass().getSimpleName());}
     }
 
     public List<Map<String,Object>> list(Authentication auth){requireSuperAdmin(auth);expirePending();var rows=db.queryForList("SELECT pr.Id_Request,pr.Id_User,u.Username,u.First_Name,u.Last_Name,u.Email,pr.Requested_System,pr.Status,pr.Created_At,pr.Expires_At,pr.Reset_At,pr.Completed_At,pr.Notified_At FROM password_reset_requests pr JOIN users u ON u.Id_User=pr.Id_User ORDER BY (pr.Status='PENDING') DESC,pr.Created_At DESC LIMIT 200",Map.of());for(var row:rows)for(String field:List.of("Created_At","Expires_At","Reset_At","Completed_At","Notified_At"))if(row.get(field)!=null)row.put(field,instant(row.get(field)));return rows;}
