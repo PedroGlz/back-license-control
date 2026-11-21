@@ -23,7 +23,7 @@ import org.slf4j.LoggerFactory;
 @Service
 public class PasswordRecoveryService {
     private static final Logger log = LoggerFactory.getLogger(PasswordRecoveryService.class);
-    private static final String GENERIC = "La solicitud fue aceptada para procesamiento. Si los datos corresponden a una cuenta registrada, recibirás una contraseña temporal en el correo configurado.";
+    private static final String GENERIC = "Recibimos tu solicitud. Por seguridad, solo se procesa una recuperación cada 15 minutos entre los portales. Si solicitaste una recientemente, no se generará otro correo durante ese periodo. Revisa el correo de la primera solicitud o vuelve a intentarlo después. Si los datos corresponden a una cuenta registrada y elegible, el sistema procesará el envío al correo configurado.";
     private static final String FAILED = "No fue posible completar la solicitud. Intenta nuevamente más tarde o contacta a soporte.";
     private static final SecureRandom RANDOM = new SecureRandom();
     private final NamedParameterJdbcTemplate db; private final PasswordEncoder encoder; private final MailService mail; private final PasswordRecoveryOutboxService outbox; private final TransactionTemplate tx;
