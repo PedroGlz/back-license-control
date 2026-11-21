@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 public class PasswordRecoveryService {
     private static final Logger log = LoggerFactory.getLogger(PasswordRecoveryService.class);
     private static final String GENERIC = "Recibimos tu solicitud. Por seguridad, solo se procesa una recuperación cada 15 minutos entre los portales. Si solicitaste una recientemente, no se generará otro correo durante ese periodo. Revisa el correo de la primera solicitud o vuelve a intentarlo después. Si los datos corresponden a una cuenta registrada y elegible, el sistema procesará el envío al correo configurado.";
+    private static final String RATE_LIMITED = "Ya recibimos una solicitud de restablecimiento recientemente. Espera 15 minutos antes de volver a intentarlo. Revisa el correo asociado a la cuenta.";
     private static final String FAILED = "No fue posible completar la solicitud. Intenta nuevamente más tarde o contacta a soporte.";
     private static final SecureRandom RANDOM = new SecureRandom();
     private final NamedParameterJdbcTemplate db; private final PasswordEncoder encoder; private final MailService mail; private final PasswordRecoveryOutboxService outbox; private final TransactionTemplate tx;
@@ -46,7 +47,7 @@ public class PasswordRecoveryService {
         expirePending();
         try {
             AutomaticResult result=automaticReset(key,source,now);
-            if(result.retryAfterSeconds()>0){log.info("Solicitud de recuperación contenida por cooldown. Sistema={}, segundosRestantes={}",source,result.retryAfterSeconds());return response("ACCEPTED",GENERIC,0);}
+            if(result.retryAfterSeconds()>0){log.info("Solicitud de recuperación contenida por cooldown. Sistema={}, segundosRestantes={}",source,result.retryAfterSeconds());return response("RATE_LIMITED",RATE_LIMITED,result.retryAfterSeconds());}
             return response("ACCEPTED",GENERIC,0);
         }
         catch (Exception ex) {
